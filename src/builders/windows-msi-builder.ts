@@ -1,0 +1,68 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import {
+  ReleaseArtifact,
+  ResolvedPackagerConfig
+} from '../types/packager-types.js';
+import { VirtualFileEntry } from '../types/binary-types.js';
+import { MsiDatabaseBuilder } from '../codecs/msi-database-builder.js';
+import { IcoCodec } from '../codecs/ico-codec.js';
+
+/**
+ * Packages a staged Windows NW.js release into a Windows Installer `.msi` database
+ * with embedded Cabinet (`media1.cab`), Start Menu & Desktop shortcuts, and Add/Remove Programs icon.
+ */
+export class WindowsMsiBuilder {
+  /**
+   * Generates `<appName>-<version>-win-<arch>.msi` in `config.outputDir`.
+   */
+  public static build(options: {
+    config: ResolvedPackagerConfig;
+    arch: 'x64' | 'ia32';
+    stagedEntries: VirtualFileEntry[];
+  }): ReleaseArtifact {
+    const fileName = `${options.config.appName}-${options.config.version}-win-${options.arch}.msi`;
+    const filePath = path.join(options.config.outputDir, fileName);
+
+    let rawIcon: Buffer | undefined;
+    if (options.config.win.icon && fs.existsSync(options.config.win.icon)) {
+      rawIcon = fs.readFileSync(options.config.win.icon);
+    }
+    const icoBuffer = IcoCodec.toIcoBuffer(rawIcon);
+
+    const files = options.stagedEntries
+      .filter((e) => !e.isDirectory && !e.isSymlink)
+      .map((e) => ({
+        relativePath: e.relativePath,
+        data: e.data
+      }));
+
+    const msiBuf = MsiDatabaseBuilder.buildMsi({
+      productName: options.config.productName,
+      productVersion: options.config.version,
+      manufacturer: options.config.win.manufacturer,
+      description: options.config.description,
+      upgradeCode: options.config.win.upgradeCode,
+      arch: options.arch,
+      executableName: options.config.executableName,
+      iconBuffer: icoBuffer,
+      createDesktopShortcut: options.config.win.createDesktopShortcut,
+      createStartMenuShortcut: options.config.win.createStartMenuShortcut,
+      files
+    });
+
+    fs.mkdirSync(options.config.outputDir, { recursive: true });
+    fs.writeFileSync(filePath, msiBuf);
+
+    return {
+      platform: 'win',
+      arch: options.arch,
+      format: 'win-msi',
+      filePath,
+      fileName,
+      sizeBytes: msiBuf.length,
+      sha256: crypto.createHash('sha256').update(msiBuf).digest('hex')
+    };
+  }
+}

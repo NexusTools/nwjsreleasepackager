@@ -1,0 +1,660 @@
+import { CfbWriter } from './cfb-writer.js';
+import { CabArchiveWriter } from './cab-archive-writer.js';
+import { PackagerConfigLoader } from '../config/packager-config-loader.js';
+import { MsiFileEntry } from '../types/binary-types.js';
+
+interface MsiColumnDef {
+  name: string;
+  /** 's' = string, 'i2' = 16-bit int, 'i4' = 32-bit int, 'v' = binary stream */
+  kind: 's' | 'i2' | 'i4' | 'v';
+  typeCode: number;
+}
+
+interface MsiTableDef {
+  name: string;
+  columns: MsiColumnDef[];
+  rows: (string | number | null)[][];
+}
+
+/**
+ * Pure Node.js Windows Installer (`.msi`) relational database and OLE2 package builder.
+ * Generates `_Tables`, `_Columns`, `_StringPool`, `_StringData`, standard MSI installer tables,
+ * `\x05SummaryInformation` property set stream, and embedded `media1.cab` archive.
+ */
+export class MsiDatabaseBuilder {
+  /**
+   * Builds a complete `.msi` installer binary Buffer for a packaged Windows NW.js directory.
+   */
+  public static buildMsi(options: {
+    productName: string;
+    productVersion: string;
+    manufacturer: string;
+    description: string;
+    upgradeCode: string;
+    arch: 'x64' | 'ia32';
+    executableName: string;
+    iconBuffer: Buffer;
+    createDesktopShortcut: boolean;
+    createStartMenuShortcut: boolean;
+    files: { relativePath: string; data: Buffer }[];
+  }): Buffer {
+    const productCode = PackagerConfigLoader.deterministicGuid(
+      `msi-product:${options.upgradeCode}:${options.productVersion}:${options.arch}`
+    );
+    const packageCode = PackagerConfigLoader.deterministicGuid(
+      `msi-package:${productCode}:${Date.now()}`
+    );
+
+    // Organize directories and files into MSI Directory / Component / File records
+    const dirMap = new Map<string, { key: string; parentKey: string; defaultDir: string }>();
+    dirMap.set('', {
+      key: 'INSTALLDIR',
+      parentKey: options.arch === 'x64' ? 'ProgramFiles64Folder' : 'ProgramFilesFolder',
+      defaultDir: MsiDatabaseBuilder.formatDefaultDir(options.productName, 1)
+    });
+
+    let dirCounter = 1;
+    const ensureDirKey = (relDir: string): string => {
+      const normalized = relDir.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      if (dirMap.has(normalized)) {
+        return dirMap.get(normalized)!.key;
+      }
+      const parts = normalized.split('/');
+      const leafName = parts[parts.length - 1];
+      const parentPath = parts.slice(0, -1).join('/');
+      const parentKey = ensureDirKey(parentPath);
+      const key = `DIR_${String(dirCounter++).padStart(4, '0')}`;
+      dirMap.set(normalized, {
+        key,
+        parentKey,
+        defaultDir: MsiDatabaseBuilder.formatDefaultDir(leafName, dirCounter)
+      });
+      return key;
+    };
+
+    const msiFiles: MsiFileEntry[] = [];
+    const mainExeTarget = `${options.executableName}.exe`.toLowerCase();
+
+    for (let i = 0; i < options.files.length; i++) {
+      const f = options.files[i];
+      const rel = f.relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+      const lastSlash = rel.lastIndexOf('/');
+      const relDir = lastSlash >= 0 ? rel.slice(0, lastSlash) : '';
+      const baseName = lastSlash >= 0 ? rel.slice(lastSlash + 1) : rel;
+
+      const directoryKey = ensureDirKey(relDir);
+      const seq = i + 1;
+      const fileKey = `File_${String(seq).padStart(4, '0')}`;
+      const componentKey = `Comp_${String(seq).padStart(4, '0')}`;
+      const fileNameField = MsiDatabaseBuilder.formatDefaultDir(baseName, seq);
+
+      msiFiles.push({
+        fileKey,
+        componentKey,
+        directoryKey,
+        fileNameField,
+        longFileName: baseName,
+        relativePath: rel,
+        fileSize: f.data.length,
+        data: f.data,
+        sequence: seq,
+        isMainExecutable: relDir === '' && baseName.toLowerCase() === mainExeTarget
+      });
+    }
+
+    const mainExeEntry = msiFiles.find((f) => f.isMainExecutable) ?? msiFiles[0];
+
+    // Build relational tables
+    const tables: MsiTableDef[] = [];
+
+    // 1. Property table
+    tables.push({
+      name: 'Property',
+      columns: [
+        { name: 'Property', kind: 's', typeCode: 0x0d48 },
+        { name: 'Value', kind: 's', typeCode: 0x0f00 }
+      ],
+      rows: [
+        ['ALLUSERS', '1'],
+        ['ARPHELPLINK', 'https://nwjs.io'],
+        ['ARPPRODUCTICON', 'AppIcon.ico'],
+        ['Manufacturer', options.manufacturer],
+        ['ProductCode', productCode],
+        ['ProductLanguage', '1033'],
+        ['ProductName', options.productName],
+        ['ProductVersion', MsiDatabaseBuilder.normalizeMsiVersion(options.productVersion)],
+        ['UpgradeCode', options.upgradeCode]
+      ]
+    });
+
+    // 2. Directory table
+    const directoryRows: (string | number | null)[][] = [
+      ['TARGETDIR', null, 'SourceDir'],
+      [
+        options.arch === 'x64' ? 'ProgramFiles64Folder' : 'ProgramFilesFolder',
+        'TARGETDIR',
+        '.'
+      ],
+      ['ProgramMenuFolder', 'TARGETDIR', '.'],
+      [
+        'ApplicationProgramsFolder',
+        'ProgramMenuFolder',
+        MsiDatabaseBuilder.formatDefaultDir(options.productName, 999)
+      ],
+      ['DesktopFolder', 'TARGETDIR', '.']
+    ];
+    for (const d of dirMap.values()) {
+      directoryRows.push([d.key, d.parentKey, d.defaultDir]);
+    }
+    tables.push({
+      name: 'Directory',
+      columns: [
+        { name: 'Directory', kind: 's', typeCode: 0x0d48 },
+        { name: 'Directory_Parent', kind: 's', typeCode: 0x1d48 },
+        { name: 'DefaultDir', kind: 's', typeCode: 0x0fff }
+      ],
+      rows: directoryRows
+    });
+
+    // 3. Component table
+    const compAttr = options.arch === 'x64' ? 256 : 0; // msidbComponentAttributes64bit = 256
+    const componentRows: (string | number | null)[][] = msiFiles.map((f) => [
+      f.componentKey,
+      PackagerConfigLoader.deterministicGuid(`msi-comp:${productCode}:${f.relativePath}`),
+      f.directoryKey,
+      compAttr,
+      null,
+      f.fileKey
+    ]);
+    tables.push({
+      name: 'Component',
+      columns: [
+        { name: 'Component', kind: 's', typeCode: 0x0d48 },
+        { name: 'ComponentId', kind: 's', typeCode: 0x1d26 },
+        { name: 'Directory_', kind: 's', typeCode: 0x0d48 },
+        { name: 'Attributes', kind: 'i2', typeCode: 0x0102 },
+        { name: 'Condition', kind: 's', typeCode: 0x1dff },
+        { name: 'KeyPath', kind: 's', typeCode: 0x1d48 }
+      ],
+      rows: componentRows
+    });
+
+    // 4. File table
+    const fileRows: (string | number | null)[][] = msiFiles.map((f) => [
+      f.fileKey,
+      f.componentKey,
+      f.fileNameField,
+      f.fileSize,
+      null,
+      null,
+      512, // msidbFileAttributesVital
+      f.sequence
+    ]);
+    tables.push({
+      name: 'File',
+      columns: [
+        { name: 'File', kind: 's', typeCode: 0x0d48 },
+        { name: 'Component_', kind: 's', typeCode: 0x0d48 },
+        { name: 'FileName', kind: 's', typeCode: 0x0fff },
+        { name: 'FileSize', kind: 'i4', typeCode: 0x0104 },
+        { name: 'Version', kind: 's', typeCode: 0x1d48 },
+        { name: 'Language', kind: 's', typeCode: 0x1d14 },
+        { name: 'Attributes', kind: 'i2', typeCode: 0x1102 },
+        { name: 'Sequence', kind: 'i2', typeCode: 0x0102 }
+      ],
+      rows: fileRows
+    });
+
+    // 5. Feature table
+    tables.push({
+      name: 'Feature',
+      columns: [
+        { name: 'Feature', kind: 's', typeCode: 0x0d26 },
+        { name: 'Feature_Parent', kind: 's', typeCode: 0x1d26 },
+        { name: 'Title', kind: 's', typeCode: 0x1f40 },
+        { name: 'Description', kind: 's', typeCode: 0x1fff },
+        { name: 'Display', kind: 'i2', typeCode: 0x1102 },
+        { name: 'Level', kind: 'i2', typeCode: 0x0102 },
+        { name: 'Directory_', kind: 's', typeCode: 0x1d48 },
+        { name: 'Attributes', kind: 'i2', typeCode: 0x0102 }
+      ],
+      rows: [
+        [
+          'MainFeature',
+          null,
+          options.productName,
+          options.description,
+          1,
+          1,
+          'INSTALLDIR',
+          0
+        ]
+      ]
+    });
+
+    // 6. FeatureComponents table
+    tables.push({
+      name: 'FeatureComponents',
+      columns: [
+        { name: 'Feature_', kind: 's', typeCode: 0x0d26 },
+        { name: 'Component_', kind: 's', typeCode: 0x0d48 }
+      ],
+      rows: msiFiles.map((f) => ['MainFeature', f.componentKey])
+    });
+
+    // 7. Media table
+    tables.push({
+      name: 'Media',
+      columns: [
+        { name: 'DiskId', kind: 'i2', typeCode: 0x0102 },
+        { name: 'LastSequence', kind: 'i2', typeCode: 0x0102 },
+        { name: 'DiskPrompt', kind: 's', typeCode: 0x1f40 },
+        { name: 'Cabinet', kind: 's', typeCode: 0x1dff },
+        { name: 'VolumeLabel', kind: 's', typeCode: 0x1d20 },
+        { name: 'Source', kind: 's', typeCode: 0x1d48 }
+      ],
+      rows: [[1, msiFiles.length, null, '#media1.cab', null, null]]
+    });
+
+    // 8. Icon table
+    tables.push({
+      name: 'Icon',
+      columns: [
+        { name: 'Name', kind: 's', typeCode: 0x0d48 },
+        { name: 'Data', kind: 'v', typeCode: 0x0900 }
+      ],
+      rows: [['AppIcon.ico', 'Icon.AppIcon.ico']]
+    });
+
+    // 9. Shortcut table
+    const shortcutRows: (string | number | null)[][] = [];
+    if (mainExeEntry) {
+      if (options.createStartMenuShortcut) {
+        shortcutRows.push([
+          'StartMenuShortcut',
+          'ApplicationProgramsFolder',
+          MsiDatabaseBuilder.formatDefaultDir(options.productName, 101),
+          mainExeEntry.componentKey,
+          `[#${mainExeEntry.fileKey}]`,
+          null,
+          options.description,
+          0,
+          'AppIcon.ico',
+          0,
+          1,
+          'INSTALLDIR'
+        ]);
+      }
+      if (options.createDesktopShortcut) {
+        shortcutRows.push([
+          'DesktopShortcut',
+          'DesktopFolder',
+          MsiDatabaseBuilder.formatDefaultDir(options.productName, 102),
+          mainExeEntry.componentKey,
+          `[#${mainExeEntry.fileKey}]`,
+          null,
+          options.description,
+          0,
+          'AppIcon.ico',
+          0,
+          1,
+          'INSTALLDIR'
+        ]);
+      }
+    }
+    if (shortcutRows.length > 0) {
+      tables.push({
+        name: 'Shortcut',
+        columns: [
+          { name: 'Shortcut', kind: 's', typeCode: 0x0d48 },
+          { name: 'Directory_', kind: 's', typeCode: 0x0d48 },
+          { name: 'Name', kind: 's', typeCode: 0x0f80 },
+          { name: 'Component_', kind: 's', typeCode: 0x0d48 },
+          { name: 'Target', kind: 's', typeCode: 0x0d48 },
+          { name: 'Arguments', kind: 's', typeCode: 0x1dff },
+          { name: 'Description', kind: 's', typeCode: 0x1fff },
+          { name: 'Hotkey', kind: 'i2', typeCode: 0x1102 },
+          { name: 'Icon_', kind: 's', typeCode: 0x1d48 },
+          { name: 'IconIndex', kind: 'i2', typeCode: 0x1102 },
+          { name: 'ShowCmd', kind: 'i2', typeCode: 0x1102 },
+          { name: 'WkDir', kind: 's', typeCode: 0x1d48 }
+        ],
+        rows: shortcutRows
+      });
+    }
+
+    // 10. InstallExecuteSequence table
+    tables.push({
+      name: 'InstallExecuteSequence',
+      columns: [
+        { name: 'Action', kind: 's', typeCode: 0x0d48 },
+        { name: 'Condition', kind: 's', typeCode: 0x1dff },
+        { name: 'Sequence', kind: 'i2', typeCode: 0x1102 }
+      ],
+      rows: [
+        ['LaunchConditions', null, 100],
+        ['CostInitialize', null, 800],
+        ['FileCost', null, 900],
+        ['CostFinalize', null, 1000],
+        ['InstallValidate', null, 1400],
+        ['InstallInitialize', null, 1500],
+        ['ProcessComponents', null, 1600],
+        ['UnpublishFeatures', null, 1800],
+        ['RemoveShortcuts', null, 3200],
+        ['RemoveFiles', null, 3500],
+        ['InstallFiles', null, 4000],
+        ['CreateShortcuts', null, 4500],
+        ['RegisterUser', null, 6000],
+        ['RegisterProduct', null, 6100],
+        ['PublishFeatures', null, 6300],
+        ['PublishProduct', null, 6400],
+        ['InstallFinalize', null, 6600]
+      ]
+    });
+
+    // 11. InstallUISequence table
+    tables.push({
+      name: 'InstallUISequence',
+      columns: [
+        { name: 'Action', kind: 's', typeCode: 0x0d48 },
+        { name: 'Condition', kind: 's', typeCode: 0x1dff },
+        { name: 'Sequence', kind: 'i2', typeCode: 0x1102 }
+      ],
+      rows: [
+        ['LaunchConditions', null, 100],
+        ['CostInitialize', null, 800],
+        ['FileCost', null, 900],
+        ['CostFinalize', null, 1000],
+        ['ExecuteAction', null, 1300]
+      ]
+    });
+
+    // Build _Tables and _Columns metadata
+    const stringPool = new Map<string, { id: number; refCount: number }>();
+    const stringList: string[] = [];
+
+    const internString = (str: string | null): number => {
+      if (str === null || str === '') {
+        return 0;
+      }
+      const existing = stringPool.get(str);
+      if (existing) {
+        existing.refCount++;
+        return existing.id;
+      }
+      const id = stringList.length + 1;
+      stringList.push(str);
+      stringPool.set(str, { id, refCount: 1 });
+      return id;
+    };
+
+    const cfb = new CfbWriter();
+
+    // _Tables stream (1 column of string pool IDs)
+    const sortedTables = [...tables].sort((a, b) => a.name.localeCompare(b.name));
+    const tablesStreamBuf = Buffer.alloc(sortedTables.length * 2);
+    for (let i = 0; i < sortedTables.length; i++) {
+      const strId = internString(sortedTables[i].name);
+      tablesStreamBuf.writeUInt16LE(strId, i * 2);
+    }
+    cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('_Tables', true), tablesStreamBuf);
+
+    // _Columns stream
+    const allColumns: { table: string; number: number; name: string; typeCode: number }[] = [];
+    for (const t of sortedTables) {
+      for (let c = 0; c < t.columns.length; c++) {
+        allColumns.push({
+          table: t.name,
+          number: c + 1,
+          name: t.columns[c].name,
+          typeCode: t.columns[c].typeCode
+        });
+      }
+    }
+    const numCols = allColumns.length;
+    const colsStreamBuf = Buffer.alloc(numCols * 8);
+    for (let i = 0; i < numCols; i++) {
+      const col = allColumns[i];
+      colsStreamBuf.writeUInt16LE(internString(col.table), i * 2);
+      colsStreamBuf.writeUInt16LE((col.number | 0x8000) >>> 0, numCols * 2 + i * 2);
+      colsStreamBuf.writeUInt16LE(internString(col.name), numCols * 4 + i * 2);
+      colsStreamBuf.writeUInt16LE((col.typeCode | 0x8000) >>> 0, numCols * 6 + i * 2);
+    }
+    cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('_Columns', true), colsStreamBuf);
+
+    // Serialize each table stream in column-major order
+    for (const t of sortedTables) {
+      const numRows = t.rows.length;
+      const colBuffers: Buffer[] = [];
+
+      for (let c = 0; c < t.columns.length; c++) {
+        const colDef = t.columns[c];
+        if (colDef.kind === 'i4') {
+          const b = Buffer.alloc(numRows * 4);
+          for (let r = 0; r < numRows; r++) {
+            const val = t.rows[r][c];
+            const encoded =
+              val === null || val === undefined ? 0 : ((Number(val) + 0x80000000) >>> 0);
+            b.writeUInt32LE(encoded, r * 4);
+          }
+          colBuffers.push(b);
+        } else if (colDef.kind === 'i2') {
+          const b = Buffer.alloc(numRows * 2);
+          for (let r = 0; r < numRows; r++) {
+            const val = t.rows[r][c];
+            const encoded =
+              val === null || val === undefined ? 0 : ((Number(val) + 0x8000) & 0xffff);
+            b.writeUInt16LE(encoded, r * 2);
+          }
+          colBuffers.push(b);
+        } else {
+          const b = Buffer.alloc(numRows * 2);
+          for (let r = 0; r < numRows; r++) {
+            const val = t.rows[r][c];
+            const strId = internString(val === null || val === undefined ? null : String(val));
+            b.writeUInt16LE(strId & 0xffff, r * 2);
+          }
+          colBuffers.push(b);
+        }
+      }
+
+      cfb.addStream(
+        MsiDatabaseBuilder.encodeMsiStreamName(t.name, true),
+        Buffer.concat(colBuffers)
+      );
+    }
+
+    // Build _StringPool and _StringData streams
+    const stringDataChunks: Buffer[] = [];
+    const stringPoolBuf = Buffer.alloc((stringList.length + 1) * 4, 0);
+    // Entry 0 in _StringPool is the codepage header (65001 UTF-8 / 1252)
+    stringPoolBuf.writeUInt16LE(65001, 0);
+    stringPoolBuf.writeUInt16LE(0, 2);
+
+    for (let i = 0; i < stringList.length; i++) {
+      const s = stringList[i];
+      const entry = stringPool.get(s)!;
+      const utf8Buf = Buffer.from(s, 'utf8');
+      stringDataChunks.push(utf8Buf);
+      stringPoolBuf.writeUInt16LE(utf8Buf.length, (i + 1) * 4);
+      stringPoolBuf.writeUInt16LE(entry.refCount, (i + 1) * 4 + 2);
+    }
+
+    cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('_StringPool', true), stringPoolBuf);
+    cfb.addStream(
+      MsiDatabaseBuilder.encodeMsiStreamName('_StringData', true),
+      Buffer.concat(stringDataChunks)
+    );
+
+    // Add Icon binary stream
+    cfb.addStream(
+      MsiDatabaseBuilder.encodeMsiStreamName('Icon.AppIcon.ico', false),
+      options.iconBuffer
+    );
+
+    // Build and add embedded media1.cab stream
+    const cabBuffer = CabArchiveWriter.buildCabinet(msiFiles);
+    cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('media1.cab', false), cabBuffer);
+
+    // Build and add \x05SummaryInformation stream
+    const summaryInfo = MsiDatabaseBuilder.buildSummaryInformationStream({
+      title: 'Installation Database',
+      subject: options.productName,
+      author: options.manufacturer,
+      keywords: 'Installer, MSI, Database',
+      comments: options.description,
+      template: options.arch === 'x64' ? 'x64;1033' : 'Intel;1033',
+      revisionNumber: packageCode,
+      creatingApp: '@nexustools/nwjsreleasepackager'
+    });
+    cfb.addStream('\x05SummaryInformation', summaryInfo);
+
+    return cfb.toBuffer();
+  }
+
+  /**
+   * Builds the OLE `\x05SummaryInformation` Property Set stream per MS-OLEPS / MSI specification.
+   */
+  public static buildSummaryInformationStream(info: {
+    title: string;
+    subject: string;
+    author: string;
+    keywords: string;
+    comments: string;
+    template: string;
+    revisionNumber: string;
+    creatingApp: string;
+  }): Buffer {
+    // FMTID_SummaryInformation: {F29F85E0-4FF9-1068-AB91-08002B27B3D9}
+    const fmtid = Buffer.from([
+      0xe0, 0x85, 0x9f, 0xf2, 0xf9, 0x4f, 0x68, 0x10,
+      0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9
+    ]);
+
+    const encodeI2 = (val: number): Buffer => {
+      const b = Buffer.alloc(8, 0);
+      b.writeUInt32LE(2, 0); // VT_I2
+      b.writeInt16LE(val, 4);
+      return b;
+    };
+
+    const encodeI4 = (val: number): Buffer => {
+      const b = Buffer.alloc(8, 0);
+      b.writeUInt32LE(3, 0); // VT_I4
+      b.writeInt32LE(val, 4);
+      return b;
+    };
+
+    const encodeLpstr = (val: string): Buffer => {
+      const strBytes = Buffer.from(val + '\0', 'utf8');
+      const paddedLen = Math.ceil(strBytes.length / 4) * 4;
+      const b = Buffer.alloc(8 + paddedLen, 0);
+      b.writeUInt32LE(30, 0); // VT_LPSTR
+      b.writeUInt32LE(strBytes.length, 4);
+      strBytes.copy(b, 8);
+      return b;
+    };
+
+    const properties: { pid: number; data: Buffer }[] = [
+      { pid: 1, data: encodeI2(1252) }, // PID_CODEPAGE
+      { pid: 2, data: encodeLpstr(info.title) }, // PID_TITLE
+      { pid: 3, data: encodeLpstr(info.subject) }, // PID_SUBJECT
+      { pid: 4, data: encodeLpstr(info.author) }, // PID_AUTHOR
+      { pid: 5, data: encodeLpstr(info.keywords) }, // PID_KEYWORDS
+      { pid: 6, data: encodeLpstr(info.comments) }, // PID_COMMENTS
+      { pid: 7, data: encodeLpstr(info.template) }, // PID_TEMPLATE
+      { pid: 9, data: encodeLpstr(info.revisionNumber) }, // PID_REVNUMBER
+      { pid: 14, data: encodeI4(200) }, // PID_PAGECOUNT (MSI 2.0)
+      { pid: 15, data: encodeI4(2) }, // PID_WORDCOUNT (Compressed cabinet)
+      { pid: 18, data: encodeLpstr(info.creatingApp) }, // PID_APPNAME
+      { pid: 19, data: encodeI4(2) } // PID_SECURITY
+    ];
+
+    const sectionHeaderSize = 8 + properties.length * 8;
+    let currentPropOffset = sectionHeaderSize;
+    const propOffsets: number[] = [];
+    for (const p of properties) {
+      propOffsets.push(currentPropOffset);
+      currentPropOffset += p.data.length;
+    }
+
+    const sectionSize = currentPropOffset;
+    const sectionHeader = Buffer.alloc(sectionHeaderSize, 0);
+    sectionHeader.writeUInt32LE(sectionSize, 0);
+    sectionHeader.writeUInt32LE(properties.length, 4);
+    for (let i = 0; i < properties.length; i++) {
+      sectionHeader.writeUInt32LE(properties[i].pid, 8 + i * 8);
+      sectionHeader.writeUInt32LE(propOffsets[i], 8 + i * 8 + 4);
+    }
+
+    const streamHeader = Buffer.alloc(48, 0);
+    streamHeader.writeUInt16LE(0xfffe, 0); // ByteOrder
+    streamHeader.writeUInt16LE(0, 2); // Version
+    streamHeader.writeUInt32LE(0x00020005, 4); // SystemIdentifier (Windows)
+    streamHeader.writeUInt32LE(1, 24); // NumPropertySets = 1
+    fmtid.copy(streamHeader, 28);
+    streamHeader.writeUInt32LE(48, 44); // Offset to section 0
+
+    return Buffer.concat([
+      streamHeader,
+      sectionHeader,
+      ...properties.map((p) => p.data)
+    ]);
+  }
+
+  /**
+   * Encodes an MSI stream or table name using Windows Installer's 6-bit Unicode compression.
+   */
+  public static encodeMsiStreamName(name: string, isTable: boolean): string {
+    const mapChar = (ch: number): number => {
+      if (ch >= 0x30 && ch <= 0x39) return ch - 0x30; // '0'-'9' -> 0..9
+      if (ch >= 0x41 && ch <= 0x5a) return ch - 0x41 + 10; // 'A'-'Z' -> 10..35
+      if (ch >= 0x61 && ch <= 0x7a) return ch - 0x61 + 36; // 'a'-'z' -> 36..61
+      if (ch === 0x2e) return 62; // '.' -> 62
+      if (ch === 0x5f) return 63; // '_' -> 63
+      return -1;
+    };
+
+    const outChars: number[] = [];
+    if (isTable) {
+      outChars.push(0x4840);
+    }
+
+    let i = 0;
+    while (i < name.length) {
+      const c0 = mapChar(name.charCodeAt(i));
+      const c1 = i + 1 < name.length ? mapChar(name.charCodeAt(i + 1)) : -1;
+      if (c0 >= 0 && c1 >= 0) {
+        outChars.push(0x3800 + c0 + (c1 << 6));
+        i += 2;
+      } else if (c0 >= 0) {
+        outChars.push(0x4800 + c0);
+        i += 1;
+      } else {
+        outChars.push(name.charCodeAt(i));
+        i += 1;
+      }
+    }
+    return String.fromCharCode(...outChars);
+  }
+
+  private static formatDefaultDir(longName: string, index: number): string {
+    const extIdx = longName.lastIndexOf('.');
+    const base = extIdx > 0 ? longName.slice(0, extIdx) : longName;
+    const ext = extIdx > 0 ? longName.slice(extIdx + 1) : '';
+    const cleanBase = base.replace(/[^A-Za-z0-9_]/g, '').toUpperCase() || 'FILE';
+    const cleanExt = ext.replace(/[^A-Za-z0-9_]/g, '').toUpperCase().slice(0, 3);
+    const shortPrefix = cleanBase.slice(0, 4);
+    const shortName = `${shortPrefix}~${index % 999}${cleanExt ? '.' + cleanExt : ''}`;
+    return `${shortName}|${longName}`;
+  }
+
+  private static normalizeMsiVersion(version: string): string {
+    const nums = version
+      .replace(/[^0-9.]/g, '')
+      .split('.')
+      .filter(Boolean)
+      .map((n) => Math.min(65535, Math.max(0, parseInt(n, 10) || 0)));
+    return `${nums[0] ?? 1}.${nums[1] ?? 0}.${nums[2] ?? 0}`;
+  }
+}
