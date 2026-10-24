@@ -1,6 +1,6 @@
 {
   "name": "@nexustools/nwjsreleasepackager",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "description": "Pure Node.js cross-platform NW.js release packager generating Windows (.zip, .msi), macOS (.dmg with drag-to-Applications .app), and Linux (.deb, .flatpak, .zip) releases with zero external tool dependencies",
   "type": "module",
   "main": "./dist/index.js",

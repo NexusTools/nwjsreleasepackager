@@ -6,9 +6,9 @@ Generates ready-to-distribute installers and archives for **Windows**, **macOS**
 
 - **Windows**:
   - **`.zip` Release (`win-zip`)**: Portable application directory with renamed `<executable>.exe`, injected PE32/PE32+ `.rsrc` icons (`RT_ICON`, `RT_GROUP_ICON`) and `VS_VERSIONINFO` (`RT_VERSION`).
-  - **`.msi` Installer (`win-msi`)**: Spec-compliant Windows Installer OLE2 Compound File (`.msi`) with embedded Microsoft Cabinet (`media1.cab`), `ProgramFiles64Folder` / `ProgramFilesFolder` installation, Desktop & Start Menu shortcuts, and Add/Remove Programs metadata.
+  - **`.msi` Installer (`win-msi`)**: Spec-compliant Windows Installer OLE2 Compound File (`.msi`) with embedded Microsoft Cabinet (`media1.cab`), interactive visual wizard (`WelcomeDlg` description & icon screen + `InstallDirDlg` & `BrowseDlg` folder picker), configurable `C:\Program Files\<installPath>` installation directory, Desktop & Start Menu shortcuts, and Add/Remove Programs metadata.
 - **macOS**:
-  - **Mountable `.dmg` Disk Image (`mac-dmg`)**: Apple Universal Disk Image Format (`koly` trailer + `blkx` `Mish` zlib-compressed blocks) wrapping a native **HFS+ (Mac OS Extended)** filesystem containing `<ProductName>.app` (with customized `Contents/Info.plist`, `app.icns`, and `Contents/Resources/app.nw`), a Finder `.DS_Store` icon-view layout, and a `/Applications` symbolic link for drag-and-drop installation into `Applications`.
+  - **Mountable `.dmg` Disk Image (`mac-dmg`)**: Apple Universal Disk Image Format (`koly` trailer + `blkx` `Mish` zlib-compressed blocks) wrapping a native **HFS+ (Mac OS Extended)** filesystem containing `<ProductName>.app` (with customized `Contents/Info.plist`, `app.icns`, and `Contents/Resources/app.nw`), a Finder `.DS_Store` icon-view layout, a `.background/background.png` splash image (customizable via `mac.splashBackground` or auto-generated with the app on the left, an arrow in the center, and Applications on the right), and a `/Applications` symbolic link for drag-and-drop installation into `Applications`.
 - **Linux**:
   - **Debian `.deb` Package (`linux-deb`)**: Standard UNIX `ar` archive (`debian-binary`, `control.tar.gz`, `data.tar.gz`) installing into `/opt/<app>`, `/usr/bin/<app>`, `/usr/share/applications/<app>.desktop`, and `/usr/share/icons/hicolor/256x256/apps/<app>.png`.
   - **Flatpak Single-File Bundle (`linux-flatpak`)**: Self-contained `.flatpak` GVariant + OSTree static-delta bundle with sandbox permissions, `.desktop` export, and AppStream MetaInfo XML.
@@ -61,11 +61,15 @@ const packager = new NwjsReleasePackager({
   win: {
     arch: ['x64'],
     formats: ['win-zip', 'win-msi'],
-    manufacturer: 'NexusTools'
+    manufacturer: 'NexusTools',
+    installPath: 'NexusTools\\MyNWApp',
+    description: 'High-performance cross-platform NW.js desktop application',
+    icon: './assets/icon.ico'
   },
   mac: {
     arch: ['x64', 'arm64'],
-    formats: ['mac-dmg']
+    formats: ['mac-dmg'],
+    splashBackground: './assets/dmg-splash.png' // optional; auto-generated if omitted
   },
   linux: {
     arch: ['x64'],
