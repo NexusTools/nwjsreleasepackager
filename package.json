@@ -6,8 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "nwjsreleasepackager": "./bin/nwjsreleasepackager.js",
-    "nwjs-pack": "./bin/nwjsreleasepackager.js"
+    "nwjsreleasepackager": "bin/nwjsreleasepackager.js",
+    "nwjs-pack": "bin/nwjsreleasepackager.js"
   },
   "exports": {
     ".": {
