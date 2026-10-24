@@ -66,8 +66,15 @@ export interface WindowsTargetConfig {
   arch?: ('x64' | 'ia32')[];
   /** Formats to produce for Windows (default: ['win-zip', 'win-msi']) */
   formats?: ('win-zip' | 'win-msi')[];
-  /** Path to .ico or .png icon file */
+  /** Path to .ico or .png icon file (optional; embedded into exe and MSI UI/shortcuts when provided) */
   icon?: string;
+  /** Optional MSI-specific description shown on the initial Welcome/Description screen of the MSI installer */
+  description?: string;
+  /**
+   * Default installation subdirectory path inside `C:\Program Files\` for the MSI installer
+   * (e.g., `'NexusTools\\NXTConvert'`). Defaults to `productName` (`C:\Program Files\<productName>`).
+   */
+  installPath?: string;
   /** Company / Manufacturer name for PE version info and MSI installer */
   manufacturer?: string;
   /** Windows Installer UpgradeCode GUID (deterministic UUID generated from appId if omitted) */
@@ -92,6 +99,12 @@ export interface MacTargetConfig {
   formats?: 'mac-dmg'[];
   /** Path to .icns or .png icon file */
   icon?: string;
+  /**
+   * Optional path to a custom PNG splash background image for the `.dmg` installer window.
+   * When omitted, a default 600x400 splash background is generated showing the app on the left,
+   * a directional arrow in the center, and the Applications folder on the right.
+   */
+  splashBackground?: string;
   /** macOS CFBundleIdentifier (e.g. 'com.example.myapp') */
   bundleId?: string;
   /** macOS LSApplicationCategoryType (default: 'public.app-category.utilities') */
@@ -220,8 +233,14 @@ export interface ResolvedPackagerConfig {
   extraFiles: ExtraFileSpec[];
   icon?: string;
   platforms: TargetPlatform[];
-  win: Required<Omit<WindowsTargetConfig, 'icon'>> & { icon?: string };
-  mac: Required<Omit<MacTargetConfig, 'icon'>> & { icon?: string };
+  win: Required<Omit<WindowsTargetConfig, 'icon' | 'description'>> & {
+    icon?: string;
+    description?: string;
+  };
+  mac: Required<Omit<MacTargetConfig, 'icon' | 'splashBackground'>> & {
+    icon?: string;
+    splashBackground?: string;
+  };
   linux: Required<Omit<LinuxTargetConfig, 'icon'>> & { icon?: string };
   onProgress?: (stage: string, detail: string) => void;
 }

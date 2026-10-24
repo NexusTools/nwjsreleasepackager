@@ -79,7 +79,9 @@ describe('@nexustools/nwjsreleasepackager end-to-end suite', () => {
         platforms: ['win', 'osx', 'linux'],
         win: {
           arch: ['x64'],
-          formats: ['win-zip', 'win-msi']
+          formats: ['win-zip', 'win-msi'],
+          installPath: 'NexusTools\\DemoStudio',
+          description: 'Custom MSI Welcome Screen Description'
         },
         mac: {
           arch: ['x64'],
@@ -120,6 +122,18 @@ describe('@nexustools/nwjsreleasepackager end-to-end suite', () => {
         msiBuf.includes(Buffer.from('MSCF', 'ascii')),
         'MSI should embed MSCF Cabinet stream'
       );
+      assert.ok(
+        msiBuf.includes(Buffer.from('WelcomeDlg', 'utf8')),
+        'MSI should include initial WelcomeDlg description screen'
+      );
+      assert.ok(
+        msiBuf.includes(Buffer.from('Custom MSI Welcome Screen Description', 'utf8')),
+        'MSI should include custom description text'
+      );
+      assert.ok(
+        msiBuf.includes(Buffer.from('INSTALLPARENT_1', 'utf8')),
+        'MSI should configure custom Program Files subdirectory hierarchy'
+      );
 
       // 3. Verify macOS DMG
       const macDmg = result.artifacts.find((a) => a.format === 'mac-dmg');
@@ -147,6 +161,14 @@ describe('@nexustools/nwjsreleasepackager end-to-end suite', () => {
       assert.ok(
         decompressedFirstChunk.includes(Buffer.from('/Applications', 'utf8')),
         'DMG HFS+ volume must contain /Applications symlink target'
+      );
+      assert.ok(
+        decompressedFirstChunk.includes(Buffer.from('.background/background.png', 'utf8')),
+        'DMG .DS_Store must reference .background/background.png splash image'
+      );
+      assert.ok(
+        decompressedFirstChunk.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47])),
+        'DMG HFS+ volume must embed the PNG splash background'
       );
       assert.ok(
         decompressedFirstChunk.includes(Buffer.from('Bud1', 'ascii')),

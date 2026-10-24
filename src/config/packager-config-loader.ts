@@ -175,6 +175,8 @@ export class PackagerConfigLoader {
           : merged.icon
             ? path.resolve(projectDir, merged.icon)
             : undefined,
+        description: merged.win?.description ?? description,
+        installPath: merged.win?.installPath ?? productName,
         manufacturer: merged.win?.manufacturer ?? author,
         upgradeCode,
         createDesktopShortcut: merged.win?.createDesktopShortcut ?? true,
@@ -194,6 +196,9 @@ export class PackagerConfigLoader {
           : merged.icon
             ? path.resolve(projectDir, merged.icon)
             : undefined,
+        splashBackground: merged.mac?.splashBackground
+          ? path.resolve(projectDir, merged.mac.splashBackground)
+          : undefined,
         bundleId: merged.mac?.bundleId ?? appId,
         category: merged.mac?.category ?? 'public.app-category.utilities',
         volumeName: merged.mac?.volumeName ?? `${productName} ${version}`,

@@ -25,11 +25,11 @@ export class WindowsMsiBuilder {
     const fileName = `${options.config.appName}-${options.config.version}-win-${options.arch}.msi`;
     const filePath = path.join(options.config.outputDir, fileName);
 
-    let rawIcon: Buffer | undefined;
+    let icoBuffer: Buffer | undefined;
     if (options.config.win.icon && fs.existsSync(options.config.win.icon)) {
-      rawIcon = fs.readFileSync(options.config.win.icon);
+      const rawIcon = fs.readFileSync(options.config.win.icon);
+      icoBuffer = IcoCodec.toIcoBuffer(rawIcon);
     }
-    const icoBuffer = IcoCodec.toIcoBuffer(rawIcon);
 
     const files = options.stagedEntries
       .filter((e) => !e.isDirectory && !e.isSymlink)
@@ -42,7 +42,8 @@ export class WindowsMsiBuilder {
       productName: options.config.productName,
       productVersion: options.config.version,
       manufacturer: options.config.win.manufacturer,
-      description: options.config.description,
+      description: options.config.win.description ?? options.config.description,
+      installPath: options.config.win.installPath,
       upgradeCode: options.config.win.upgradeCode,
       arch: options.arch,
       executableName: options.config.executableName,

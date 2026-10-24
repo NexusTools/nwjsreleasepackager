@@ -7,13 +7,61 @@ export class DsStoreBuilder {
   /**
    * Builds a binary `.DS_Store` file buffer for the DMG root folder.
    */
-  public static buildDmgDsStore(appBundleName: string): Buffer {
+  public static buildDmgDsStore(
+    appBundleName: string,
+    backgroundRelPath = '.background/background.png'
+  ): Buffer {
+    const icvpPlist = Buffer.from(
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
+        `<plist version="1.0"><dict>` +
+        `<key>backgroundType</key><integer>2</integer>` +
+        `<key>backgroundImagePath</key><string>${backgroundRelPath}</string>` +
+        `<key>iconSize</key><real>80</real>` +
+        `<key>gridSpacing</key><real>100</real>` +
+        `<key>textSize</key><real>13</real>` +
+        `<key>showIconPreview</key><true/>` +
+        `</dict></plist>`,
+      'utf8'
+    );
+
+    const bwspPlist = Buffer.from(
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
+        `<plist version="1.0"><dict>` +
+        `<key>WindowBounds</key><string>{{200, 120}, {600, 400}}</string>` +
+        `<key>ShowToolbar</key><false/>` +
+        `<key>ShowSidebar</key><false/>` +
+        `<key>ShowStatusBar</key><false/>` +
+        `<key>ShowPathbar</key><false/>` +
+        `</dict></plist>`,
+      'utf8'
+    );
+
     const records: { filename: string; code: string; type: string; data: Buffer }[] = [
+      {
+        filename: '.',
+        code: 'bwsp',
+        type: 'blob',
+        data: bwspPlist
+      },
+      {
+        filename: '.',
+        code: 'icvp',
+        type: 'blob',
+        data: icvpPlist
+      },
       {
         filename: '.',
         code: 'vstl',
         type: 'type',
         data: Buffer.from('icnv', 'ascii')
+      },
+      {
+        filename: '.background',
+        code: 'Iloc',
+        type: 'blob',
+        data: DsStoreBuilder.encodeIloc(160, 680)
       },
       {
         filename: appBundleName,

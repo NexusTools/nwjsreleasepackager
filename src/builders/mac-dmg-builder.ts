@@ -7,13 +7,15 @@ import {
 } from '../types/packager-types.js';
 import { VirtualFileEntry } from '../types/binary-types.js';
 import { DsStoreBuilder } from '../codecs/ds-store-builder.js';
+import { DmgSplashGenerator } from '../codecs/dmg-splash-generator.js';
 import { HfsPlusVolumeBuilder } from '../codecs/hfs-plus-volume-builder.js';
 import { UdifDmgWriter } from '../codecs/udif-dmg-writer.js';
 
 /**
  * Packages a staged macOS `<ProductName>.app` bundle into a mountable Apple UDIF `.dmg`
- * disk image containing an HFS+ volume, `.DS_Store` icon-view layout, and an `Applications`
- * symbolic link (`/Applications`) for drag-and-drop installation.
+ * disk image containing an HFS+ volume, `.DS_Store` icon-view layout, `.background/background.png`
+ * splash image (app on the left, directional arrow in center, Applications on the right), and an
+ * `Applications` symbolic link (`/Applications`) for drag-and-drop installation.
  */
 export class MacDmgBuilder {
   /**
@@ -28,7 +30,20 @@ export class MacDmgBuilder {
     const fileName = `${options.config.appName}-${options.config.version}-mac-${options.arch}.dmg`;
     const filePath = path.join(options.config.outputDir, fileName);
 
-    const dsStoreBuf = DsStoreBuilder.buildDmgDsStore(options.appBundleName);
+    let splashPngBuf: Buffer;
+    if (
+      options.config.mac.splashBackground &&
+      fs.existsSync(options.config.mac.splashBackground)
+    ) {
+      splashPngBuf = fs.readFileSync(options.config.mac.splashBackground);
+    } else {
+      splashPngBuf = DmgSplashGenerator.generateDefaultSplashPng();
+    }
+
+    const dsStoreBuf = DsStoreBuilder.buildDmgDsStore(
+      options.appBundleName,
+      '.background/background.png'
+    );
 
     const volumeEntries: VirtualFileEntry[] = [
       ...options.stagedAppEntries,
@@ -42,7 +57,24 @@ export class MacDmgBuilder {
         mode: 0o120777,
         mtime: new Date()
       },
-      // Finder `.DS_Store` positioning `<App>.app` on the left and `Applications` on the right
+      // Splash background directory & PNG showing App (left) -> Arrow (center) -> Applications (right)
+      {
+        relativePath: '.background',
+        data: Buffer.alloc(0),
+        isDirectory: true,
+        isSymlink: false,
+        mode: 0o040755,
+        mtime: new Date()
+      },
+      {
+        relativePath: '.background/background.png',
+        data: splashPngBuf,
+        isDirectory: false,
+        isSymlink: false,
+        mode: 0o100644,
+        mtime: new Date()
+      },
+      // Finder `.DS_Store` positioning `<App>.app` on the left, `Applications` on the right, and setting splash background
       {
         relativePath: '.DS_Store',
         data: dsStoreBuf,

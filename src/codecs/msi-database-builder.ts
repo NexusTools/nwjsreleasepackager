@@ -30,15 +30,22 @@ export class MsiDatabaseBuilder {
     productName: string;
     productVersion: string;
     manufacturer: string;
-    description: string;
+    description?: string;
+    installPath?: string;
     upgradeCode: string;
     arch: 'x64' | 'ia32';
     executableName: string;
-    iconBuffer: Buffer;
+    iconBuffer?: Buffer;
     createDesktopShortcut: boolean;
     createStartMenuShortcut: boolean;
     files: { relativePath: string; data: Buffer }[];
   }): Buffer {
+    const descriptionText =
+      options.description && options.description.trim().length > 0
+        ? options.description.trim()
+        : `${options.productName} Application`;
+    const hasIcon = Boolean(options.iconBuffer && options.iconBuffer.length > 0);
+
     const productCode = PackagerConfigLoader.deterministicGuid(
       `msi-product:${options.upgradeCode}:${options.productVersion}:${options.arch}`
     );
@@ -46,12 +53,42 @@ export class MsiDatabaseBuilder {
       `msi-package:${productCode}:${Date.now()}`
     );
 
+    const programFilesRootKey =
+      options.arch === 'x64' ? 'ProgramFiles64Folder' : 'ProgramFilesFolder';
+
+    // Parse installPath (e.g., "NexusTools\\NXTConvert" or default to productName)
+    const rawInstallPath = (options.installPath ?? options.productName)
+      .replace(/\\/g, '/')
+      .replace(/^[A-Za-z]:\/Program Files(?: \(x86\))?\//i, '')
+      .replace(/^Program\s*Files(?:64Folder|Folder)?\//i, '')
+      .replace(/^\/+|\/+$/g, '');
+    const installSegments = rawInstallPath
+      .split('/')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (installSegments.length === 0) {
+      installSegments.push(options.productName);
+    }
+
+    const installParentDirs: { key: string; parentKey: string; defaultDir: string }[] = [];
+    let currentInstallParentKey = programFilesRootKey;
+    for (let i = 0; i < installSegments.length - 1; i++) {
+      const parentKey = `INSTALLPARENT_${i + 1}`;
+      installParentDirs.push({
+        key: parentKey,
+        parentKey: currentInstallParentKey,
+        defaultDir: MsiDatabaseBuilder.formatDefaultDir(installSegments[i], 900 + i)
+      });
+      currentInstallParentKey = parentKey;
+    }
+    const leafInstallFolderName = installSegments[installSegments.length - 1];
+
     // Organize directories and files into MSI Directory / Component / File records
     const dirMap = new Map<string, { key: string; parentKey: string; defaultDir: string }>();
     dirMap.set('', {
       key: 'INSTALLDIR',
-      parentKey: options.arch === 'x64' ? 'ProgramFiles64Folder' : 'ProgramFilesFolder',
-      defaultDir: MsiDatabaseBuilder.formatDefaultDir(options.productName, 1)
+      parentKey: currentInstallParentKey,
+      defaultDir: MsiDatabaseBuilder.formatDefaultDir(leafInstallFolderName, 1)
     });
 
     let dirCounter = 1;
@@ -115,38 +152,36 @@ export class MsiDatabaseBuilder {
     const tables: MsiTableDef[] = [];
 
     // 1. Property table
+    const propertyRows: (string | number | null)[][] = [
+      ['ALLUSERS', '1'],
+      ['MSIFASTINSTALL', '7'],
+      ['DefaultUIFont', 'DlgFont8'],
+      ['ErrorDialog', 'ErrorDlg'],
+      ['_BrowseProperty', 'INSTALLDIR'],
+      ['ARPHELPLINK', 'https://nwjs.io'],
+      ['Manufacturer', options.manufacturer],
+      ['ProductCode', productCode],
+      ['ProductLanguage', '1033'],
+      ['ProductName', options.productName],
+      ['ProductVersion', MsiDatabaseBuilder.normalizeMsiVersion(options.productVersion)],
+      ['UpgradeCode', options.upgradeCode]
+    ];
+    if (hasIcon) {
+      propertyRows.push(['ARPPRODUCTICON', 'AppIcon.ico']);
+    }
     tables.push({
       name: 'Property',
       columns: [
         { name: 'Property', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Value', kind: 's', typeCode: 0x0f00 }
       ],
-      rows: [
-        ['ALLUSERS', '2'],
-        ['MSIINSTALLPERUSER', '1'],
-        ['MSIFASTINSTALL', '7'],
-        ['DefaultUIFont', 'DlgFont8'],
-        ['ErrorDialog', 'ErrorDlg'],
-        ['_BrowseProperty', 'INSTALLDIR'],
-        ['ARPHELPLINK', 'https://nwjs.io'],
-        ['ARPPRODUCTICON', 'AppIcon.ico'],
-        ['Manufacturer', options.manufacturer],
-        ['ProductCode', productCode],
-        ['ProductLanguage', '1033'],
-        ['ProductName', options.productName],
-        ['ProductVersion', MsiDatabaseBuilder.normalizeMsiVersion(options.productVersion)],
-        ['UpgradeCode', options.upgradeCode]
-      ]
+      rows: propertyRows
     });
 
     // 2. Directory table
     const directoryRows: (string | number | null)[][] = [
       ['TARGETDIR', null, 'SourceDir'],
-      [
-        options.arch === 'x64' ? 'ProgramFiles64Folder' : 'ProgramFilesFolder',
-        'TARGETDIR',
-        '.'
-      ],
+      [programFilesRootKey, 'TARGETDIR', '.'],
       ['ProgramMenuFolder', 'TARGETDIR', '.'],
       [
         'ApplicationProgramsFolder',
@@ -155,6 +190,9 @@ export class MsiDatabaseBuilder {
       ],
       ['DesktopFolder', 'TARGETDIR', '.']
     ];
+    for (const pDir of installParentDirs) {
+      directoryRows.push([pDir.key, pDir.parentKey, pDir.defaultDir]);
+    }
     for (const d of dirMap.values()) {
       directoryRows.push([d.key, d.parentKey, d.defaultDir]);
     }
@@ -235,7 +273,7 @@ export class MsiDatabaseBuilder {
           'MainFeature',
           null,
           options.productName,
-          options.description,
+          descriptionText,
           1,
           1,
           'INSTALLDIR',
@@ -268,15 +306,27 @@ export class MsiDatabaseBuilder {
       rows: [[1, msiFiles.length, null, '#media1.cab', null, null]]
     });
 
-    // 8. Icon table
-    tables.push({
-      name: 'Icon',
-      columns: [
-        { name: 'Name', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
-        { name: 'Data', kind: 'v', typeCode: 0x0900 }
-      ],
-      rows: [['AppIcon.ico', 1]]
-    });
+    // 8. Icon and Binary tables (optional: included when iconBuffer is provided)
+    // - Icon table is used by Shortcut and ARPPRODUCTICON
+    // - Binary table is used by Dialog Icon controls (`SELECT Data FROM Binary WHERE Name=?`)
+    if (hasIcon) {
+      tables.push({
+        name: 'Icon',
+        columns: [
+          { name: 'Name', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+          { name: 'Data', kind: 'v', typeCode: 0x0900 }
+        ],
+        rows: [['AppIcon.ico', 1]]
+      });
+      tables.push({
+        name: 'Binary',
+        columns: [
+          { name: 'Name', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+          { name: 'Data', kind: 'v', typeCode: 0x0900 }
+        ],
+        rows: [['AppIcon.ico', 1]]
+      });
+    }
 
     // 9. Shortcut table
     const shortcutRows: (string | number | null)[][] = [];
@@ -289,9 +339,9 @@ export class MsiDatabaseBuilder {
           mainExeEntry.componentKey,
           `[#${mainExeEntry.fileKey}]`,
           null,
-          options.description,
+          descriptionText,
           0,
-          'AppIcon.ico',
+          hasIcon ? 'AppIcon.ico' : null,
           0,
           1,
           'INSTALLDIR'
@@ -305,9 +355,9 @@ export class MsiDatabaseBuilder {
           mainExeEntry.componentKey,
           `[#${mainExeEntry.fileKey}]`,
           null,
-          options.description,
+          descriptionText,
           0,
-          'AppIcon.ico',
+          hasIcon ? 'AppIcon.ico' : null,
           0,
           1,
           'INSTALLDIR'
@@ -365,6 +415,8 @@ export class MsiDatabaseBuilder {
     });
 
     // 11. InstallUISequence table
+    // WelcomeDlg (1240) is the initial visual screen showing the icon and description,
+    // which transitions to InstallDirDlg via NewDialog when the user clicks Next.
     tables.push({
       name: 'InstallUISequence',
       columns: [
@@ -377,7 +429,7 @@ export class MsiDatabaseBuilder {
         ['CostInitialize', null, 800],
         ['FileCost', null, 900],
         ['CostFinalize', null, 1000],
-        ['InstallDirDlg', 'NOT Installed', 1250],
+        ['WelcomeDlg', 'NOT Installed', 1240],
         ['MaintenanceDlg', 'Installed', 1260],
         ['ProgressDlg', null, 1280],
         ['ExecuteAction', null, 1300],
@@ -461,7 +513,7 @@ export class MsiDatabaseBuilder {
       ]
     });
 
-    // 15. Dialog table (Visual MSI Wizard with custom Install Path selection & Directory Browser)
+    // 15. Dialog table (Visual MSI Wizard with initial Welcome/Description screen + Install Path screen)
     tables.push({
       name: 'Dialog',
       columns: [
@@ -477,6 +529,18 @@ export class MsiDatabaseBuilder {
         { name: 'Control_Cancel', kind: 's', typeCode: 0x1d32 }
       ],
       rows: [
+        [
+          'WelcomeDlg',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'NextButton',
+          'NextButton',
+          'CancelButton'
+        ],
         [
           'InstallDirDlg',
           50,
@@ -589,6 +653,117 @@ export class MsiDatabaseBuilder {
     });
 
     // 16. Control table
+    const headerTextX = hasIcon ? 56 : 15;
+    const headerTextWidth = hasIcon ? 300 : 340;
+    // Icon control attributes: Visible (1) | Enabled (2) | IconSize32 (0x100000) | FixedSize (0x400000) = 5242883
+    const iconControlAttrs = 5242883;
+
+    const controlRows: (string | number | null)[][] = [
+      // --- WelcomeDlg Controls (Initial Visual Screen with Icon & Description) ---
+      ...(hasIcon
+        ? [['WelcomeDlg', 'AppIcon', 'Icon', 15, 10, 32, 32, iconControlAttrs, null, 'AppIcon.ico', null, null]]
+        : []),
+      ['WelcomeDlg', 'TitleText', 'Text', headerTextX, 10, headerTextWidth, 20, 196611, null, '{\\TitleFont}Welcome to the [ProductName] Setup Wizard', null, null],
+      ['WelcomeDlg', 'SubtitleText', 'Text', headerTextX, 30, headerTextWidth, 15, 196611, null, 'Version [ProductVersion] — Published by [Manufacturer]', null, null],
+      ['WelcomeDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+      ['WelcomeDlg', 'AboutLabel', 'Text', 20, 62, 330, 14, 3, null, '{\\DlgFontBold8}Application Description:', null, null],
+      ['WelcomeDlg', 'DescriptionBox', 'Text', 20, 80, 330, 70, 3, null, descriptionText, null, null],
+      ['WelcomeDlg', 'InstructionsText', 'Text', 20, 165, 330, 40, 3, null, 'This wizard will guide you through the installation of [ProductName] on your computer. Click Next to select the destination installation folder, or click Cancel to exit.', null, null],
+      ['WelcomeDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['WelcomeDlg', 'NextButton', 'PushButton', 230, 243, 60, 18, 3, null, '&Next >', 'CancelButton', null],
+      ['WelcomeDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'NextButton', null],
+
+      // --- InstallDirDlg Controls (Destination Installation Folder Screen) ---
+      ...(hasIcon
+        ? [['InstallDirDlg', 'AppIcon', 'Icon', 15, 10, 32, 32, iconControlAttrs, null, 'AppIcon.ico', null, null]]
+        : []),
+      ['InstallDirDlg', 'TitleText', 'Text', headerTextX, 10, headerTextWidth, 20, 196611, null, '{\\TitleFont}Destination Installation Folder', null, null],
+      ['InstallDirDlg', 'SubtitleText', 'Text', headerTextX, 30, headerTextWidth, 15, 196611, null, 'Select the folder where [ProductName] [ProductVersion] will be installed.', null, null],
+      ['InstallDirDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+      ['InstallDirDlg', 'DescriptionText', 'Text', 20, 62, 330, 36, 3, null, 'The Setup Wizard will install [ProductName] to the folder shown below. You may keep the default Program Files path, edit the path directly, or click Browse to choose another folder.', null, null],
+      ['InstallDirDlg', 'FolderLabel', 'Text', 20, 112, 330, 14, 3, null, '{\\DlgFontBold8}Destination Installation Folder:', null, null],
+      ['InstallDirDlg', 'PathEdit', 'PathEdit', 20, 128, 255, 18, 3, 'INSTALLDIR', null, 'BrowseButton', null],
+      ['InstallDirDlg', 'BrowseButton', 'PushButton', 282, 127, 68, 20, 3, null, '&Browse...', 'BackButton', null],
+      ['InstallDirDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['InstallDirDlg', 'BackButton', 'PushButton', 166, 243, 60, 18, 3, null, '< &Back', 'InstallButton', null],
+      ['InstallDirDlg', 'InstallButton', 'PushButton', 230, 243, 60, 18, 3, null, '&Install', 'PathEdit', null],
+      ['InstallDirDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'InstallButton', null],
+
+      // --- BrowseDlg Controls ---
+      ['BrowseDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Change Destination Folder', null, null],
+      ['BrowseDlg', 'ComboLabel', 'Text', 20, 42, 60, 14, 3, null, '&Look in:', null, null],
+      ['BrowseDlg', 'DirectoryCombo', 'DirectoryCombo', 75, 40, 205, 80, 458763, '_BrowseProperty', null, 'UpButton', null],
+      ['BrowseDlg', 'UpButton', 'PushButton', 286, 39, 32, 18, 3, null, '&Up', 'NewFolderButton', null],
+      ['BrowseDlg', 'NewFolderButton', 'PushButton', 322, 39, 34, 18, 3, null, '&New', 'DirectoryList', null],
+      ['BrowseDlg', 'DirectoryList', 'DirectoryList', 20, 64, 336, 122, 11, '_BrowseProperty', null, 'PathEdit', null],
+      ['BrowseDlg', 'PathLabel', 'Text', 20, 196, 85, 14, 3, null, '&Folder path:', null, null],
+      ['BrowseDlg', 'PathEdit', 'PathEdit', 95, 194, 261, 18, 11, '_BrowseProperty', null, 'OKButton', null],
+      ['BrowseDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['BrowseDlg', 'OKButton', 'PushButton', 236, 243, 56, 18, 3, null, 'OK', 'CancelButton', null],
+      ['BrowseDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'DirectoryCombo', null],
+
+      // --- MaintenanceDlg Controls ---
+      ...(hasIcon
+        ? [['MaintenanceDlg', 'AppIcon', 'Icon', 15, 10, 32, 32, iconControlAttrs, null, 'AppIcon.ico', null, null]]
+        : []),
+      ['MaintenanceDlg', 'TitleText', 'Text', headerTextX, 10, headerTextWidth, 20, 196611, null, '{\\TitleFont}[ProductName] Maintenance', null, null],
+      ['MaintenanceDlg', 'SubtitleText', 'Text', headerTextX, 30, headerTextWidth, 15, 196611, null, 'Modify, repair, or remove [ProductName].', null, null],
+      ['MaintenanceDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+      ['MaintenanceDlg', 'DescriptionText', 'Text', 20, 70, 330, 45, 3, null, '[ProductName] is currently installed. Click Remove to uninstall [ProductName] from your computer, or click Cancel to exit the wizard.', null, null],
+      ['MaintenanceDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['MaintenanceDlg', 'RemoveButton', 'PushButton', 226, 243, 64, 18, 3, null, '&Remove', 'CancelButton', null],
+      ['MaintenanceDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'RemoveButton', null],
+
+      // --- ProgressDlg Controls ---
+      ...(hasIcon
+        ? [['ProgressDlg', 'AppIcon', 'Icon', 15, 10, 32, 32, iconControlAttrs, null, 'AppIcon.ico', null, null]]
+        : []),
+      ['ProgressDlg', 'TitleText', 'Text', headerTextX, 10, headerTextWidth, 20, 196611, null, '{\\TitleFont}Installing [ProductName]', null, null],
+      ['ProgressDlg', 'SubtitleText', 'Text', headerTextX, 30, headerTextWidth, 15, 196611, null, 'Please wait while the Setup Wizard installs [ProductName].', null, null],
+      ['ProgressDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+      ['ProgressDlg', 'StatusLabel', 'Text', 20, 75, 55, 14, 3, null, 'Status:', null, null],
+      ['ProgressDlg', 'ActionText', 'Text', 75, 75, 275, 14, 3, null, 'Preparing installation...', null, null],
+      ['ProgressDlg', 'ProgressBar', 'ProgressBar', 20, 100, 330, 16, 65537, null, null, null, null],
+      ['ProgressDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['ProgressDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'CancelButton', null],
+
+      // --- CancelDlg Controls ---
+      ['CancelDlg', 'MessageText', 'Text', 20, 18, 220, 30, 3, null, 'Are you sure you want to cancel [ProductName] installation?', null, null],
+      ['CancelDlg', 'YesButton', 'PushButton', 72, 55, 56, 18, 3, null, '&Yes', 'NoButton', null],
+      ['CancelDlg', 'NoButton', 'PushButton', 136, 55, 56, 18, 3, null, '&No', 'YesButton', null],
+
+      // --- ExitDlg Controls ---
+      ...(hasIcon
+        ? [['ExitDlg', 'AppIcon', 'Icon', 20, 22, 32, 32, iconControlAttrs, null, 'AppIcon.ico', null, null]]
+        : []),
+      ['ExitDlg', 'TitleText', 'Text', hasIcon ? 62 : 20, 25, hasIcon ? 288 : 330, 24, 196611, null, '{\\VerdanaBold13}Completed the [ProductName] Setup Wizard', null, null],
+      ['ExitDlg', 'DescriptionText', 'Text', 20, 68, 330, 50, 3, null, '[ProductName] has been successfully installed on your computer. Click Finish to exit the Setup Wizard.', null, null],
+      ['ExitDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['ExitDlg', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+      // --- UserExit Controls ---
+      ['UserExit', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Was Interrupted', null, null],
+      ['UserExit', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup was cancelled before installation completed. Your system has not been modified.', null, null],
+      ['UserExit', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['UserExit', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+      // --- FatalError Controls ---
+      ['FatalError', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Ended Prematurely', null, null],
+      ['FatalError', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup ended prematurely because of an error. Your system has not been modified.', null, null],
+      ['FatalError', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+      ['FatalError', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+      // --- ErrorDlg Controls ---
+      ['ErrorDlg', 'ErrorText', 'Text', 20, 15, 230, 50, 3, null, 'Information text', null, null],
+      ['ErrorDlg', 'O', 'PushButton', 100, 75, 56, 18, 3, null, 'OK', null, null],
+      ['ErrorDlg', 'C', 'PushButton', 100, 75, 56, 18, 3, null, 'Cancel', null, null],
+      ['ErrorDlg', 'A', 'PushButton', 100, 75, 56, 18, 3, null, 'Abort', null, null],
+      ['ErrorDlg', 'R', 'PushButton', 100, 75, 56, 18, 3, null, 'Retry', null, null],
+      ['ErrorDlg', 'I', 'PushButton', 100, 75, 56, 18, 3, null, 'Ignore', null, null],
+      ['ErrorDlg', 'Y', 'PushButton', 100, 75, 56, 18, 3, null, 'Yes', null, null],
+      ['ErrorDlg', 'N', 'PushButton', 100, 75, 56, 18, 3, null, 'No', null, null]
+    ];
+
     tables.push({
       name: 'Control',
       columns: [
@@ -605,84 +780,7 @@ export class MsiDatabaseBuilder {
         { name: 'Control_Next', kind: 's', typeCode: 0x1d32 },
         { name: 'Help', kind: 's', typeCode: 0x1f32 }
       ],
-      rows: [
-        // --- InstallDirDlg Controls ---
-        ['InstallDirDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Welcome to the [ProductName] Setup Wizard', null, null],
-        ['InstallDirDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Select the installation folder for [ProductName] [ProductVersion].', null, null],
-        ['InstallDirDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
-        ['InstallDirDlg', 'DescriptionText', 'Text', 20, 62, 330, 36, 3, null, 'The Setup Wizard will install [ProductName] on your computer. You may install to the default folder shown below, edit the path directly, or click Browse to select a different folder.', null, null],
-        ['InstallDirDlg', 'FolderLabel', 'Text', 20, 112, 330, 14, 3, null, '{\\DlgFontBold8}Destination Installation Folder:', null, null],
-        ['InstallDirDlg', 'PathEdit', 'PathEdit', 20, 128, 255, 18, 3, 'INSTALLDIR', null, 'BrowseButton', null],
-        ['InstallDirDlg', 'BrowseButton', 'PushButton', 282, 127, 68, 20, 3, null, '&Browse...', 'CancelButton', null],
-        ['InstallDirDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['InstallDirDlg', 'InstallButton', 'PushButton', 230, 243, 60, 18, 3, null, '&Install', 'PathEdit', null],
-        ['InstallDirDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'InstallButton', null],
-
-        // --- BrowseDlg Controls ---
-        ['BrowseDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Change Destination Folder', null, null],
-        ['BrowseDlg', 'ComboLabel', 'Text', 20, 42, 60, 14, 3, null, '&Look in:', null, null],
-        ['BrowseDlg', 'DirectoryCombo', 'DirectoryCombo', 75, 40, 205, 80, 458763, '_BrowseProperty', null, 'UpButton', null],
-        ['BrowseDlg', 'UpButton', 'PushButton', 286, 39, 32, 18, 3, null, '&Up', 'NewFolderButton', null],
-        ['BrowseDlg', 'NewFolderButton', 'PushButton', 322, 39, 34, 18, 3, null, '&New', 'DirectoryList', null],
-        ['BrowseDlg', 'DirectoryList', 'DirectoryList', 20, 64, 336, 122, 11, '_BrowseProperty', null, 'PathEdit', null],
-        ['BrowseDlg', 'PathLabel', 'Text', 20, 196, 85, 14, 3, null, '&Folder path:', null, null],
-        ['BrowseDlg', 'PathEdit', 'PathEdit', 95, 194, 261, 18, 11, '_BrowseProperty', null, 'OKButton', null],
-        ['BrowseDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['BrowseDlg', 'OKButton', 'PushButton', 236, 243, 56, 18, 3, null, 'OK', 'CancelButton', null],
-        ['BrowseDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'DirectoryCombo', null],
-
-        // --- MaintenanceDlg Controls ---
-        ['MaintenanceDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}[ProductName] Maintenance', null, null],
-        ['MaintenanceDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Modify, repair, or remove [ProductName].', null, null],
-        ['MaintenanceDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
-        ['MaintenanceDlg', 'DescriptionText', 'Text', 20, 70, 330, 45, 3, null, '[ProductName] is currently installed. Click Remove to uninstall [ProductName] from your computer, or click Cancel to exit the wizard.', null, null],
-        ['MaintenanceDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['MaintenanceDlg', 'RemoveButton', 'PushButton', 226, 243, 64, 18, 3, null, '&Remove', 'CancelButton', null],
-        ['MaintenanceDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'RemoveButton', null],
-
-        // --- ProgressDlg Controls ---
-        ['ProgressDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Installing [ProductName]', null, null],
-        ['ProgressDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Please wait while the Setup Wizard installs [ProductName].', null, null],
-        ['ProgressDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
-        ['ProgressDlg', 'StatusLabel', 'Text', 20, 75, 55, 14, 3, null, 'Status:', null, null],
-        ['ProgressDlg', 'ActionText', 'Text', 75, 75, 275, 14, 3, null, 'Preparing installation...', null, null],
-        ['ProgressDlg', 'ProgressBar', 'ProgressBar', 20, 100, 330, 16, 65537, null, null, null, null],
-        ['ProgressDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['ProgressDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'CancelButton', null],
-
-        // --- CancelDlg Controls ---
-        ['CancelDlg', 'MessageText', 'Text', 20, 18, 220, 30, 3, null, 'Are you sure you want to cancel [ProductName] installation?', null, null],
-        ['CancelDlg', 'YesButton', 'PushButton', 72, 55, 56, 18, 3, null, '&Yes', 'NoButton', null],
-        ['CancelDlg', 'NoButton', 'PushButton', 136, 55, 56, 18, 3, null, '&No', 'YesButton', null],
-
-        // --- ExitDlg Controls ---
-        ['ExitDlg', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}Completed the [ProductName] Setup Wizard', null, null],
-        ['ExitDlg', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] has been successfully installed on your computer. Click Finish to exit the Setup Wizard.', null, null],
-        ['ExitDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['ExitDlg', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
-
-        // --- UserExit Controls ---
-        ['UserExit', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Was Interrupted', null, null],
-        ['UserExit', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup was cancelled before installation completed. Your system has not been modified.', null, null],
-        ['UserExit', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['UserExit', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
-
-        // --- FatalError Controls ---
-        ['FatalError', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Ended Prematurely', null, null],
-        ['FatalError', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup ended prematurely because of an error. Your system has not been modified.', null, null],
-        ['FatalError', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
-        ['FatalError', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
-
-        // --- ErrorDlg Controls ---
-        ['ErrorDlg', 'ErrorText', 'Text', 20, 15, 230, 50, 3, null, 'Information text', null, null],
-        ['ErrorDlg', 'O', 'PushButton', 100, 75, 56, 18, 3, null, 'OK', null, null],
-        ['ErrorDlg', 'C', 'PushButton', 100, 75, 56, 18, 3, null, 'Cancel', null, null],
-        ['ErrorDlg', 'A', 'PushButton', 100, 75, 56, 18, 3, null, 'Abort', null, null],
-        ['ErrorDlg', 'R', 'PushButton', 100, 75, 56, 18, 3, null, 'Retry', null, null],
-        ['ErrorDlg', 'I', 'PushButton', 100, 75, 56, 18, 3, null, 'Ignore', null, null],
-        ['ErrorDlg', 'Y', 'PushButton', 100, 75, 56, 18, 3, null, 'Yes', null, null],
-        ['ErrorDlg', 'N', 'PushButton', 100, 75, 56, 18, 3, null, 'No', null, null]
-      ]
+      rows: controlRows
     });
 
     // 17. ControlEvent table
@@ -697,7 +795,12 @@ export class MsiDatabaseBuilder {
         { name: 'Ordering', kind: 'i2', typeCode: 0x1502 }
       ],
       rows: [
+        // WelcomeDlg events
+        ['WelcomeDlg', 'NextButton', 'NewDialog', 'InstallDirDlg', '1', 1],
+        ['WelcomeDlg', 'CancelButton', 'SpawnDialog', 'CancelDlg', '1', 1],
+
         // InstallDirDlg events
+        ['InstallDirDlg', 'BackButton', 'NewDialog', 'WelcomeDlg', '1', 1],
         ['InstallDirDlg', 'InstallButton', 'SetTargetPath', 'INSTALLDIR', '1', 1],
         ['InstallDirDlg', 'InstallButton', 'EndDialog', 'Return', '1', 2],
         ['InstallDirDlg', 'BrowseButton', '[_BrowseProperty]', 'INSTALLDIR', '1', 1],
@@ -934,11 +1037,17 @@ export class MsiDatabaseBuilder {
       Buffer.concat(stringDataChunks)
     );
 
-    // Add Icon binary stream
-    cfb.addStream(
-      MsiDatabaseBuilder.encodeMsiStreamName('Icon.AppIcon.ico', false),
-      options.iconBuffer
-    );
+    // Add Icon and Binary streams when icon is provided
+    if (hasIcon && options.iconBuffer) {
+      cfb.addStream(
+        MsiDatabaseBuilder.encodeMsiStreamName('Icon.AppIcon.ico', false),
+        options.iconBuffer
+      );
+      cfb.addStream(
+        MsiDatabaseBuilder.encodeMsiStreamName('Binary.AppIcon.ico', false),
+        options.iconBuffer
+      );
+    }
 
     // Build and add embedded media1.cab stream
     const cabBuffer = CabArchiveWriter.buildCabinet(msiFiles);
@@ -950,7 +1059,7 @@ export class MsiDatabaseBuilder {
       subject: options.productName,
       author: options.manufacturer,
       keywords: 'Installer, MSI, Database',
-      comments: options.description,
+      comments: descriptionText,
       template: options.arch === 'x64' ? 'x64;1033' : 'Intel;1033',
       revisionNumber: packageCode,
       creatingApp: '@nexustools/nwjsreleasepackager'

@@ -16,6 +16,7 @@ export { CfbWriter } from './codecs/cfb-writer.js';
 export { CabArchiveWriter } from './codecs/cab-archive-writer.js';
 export { MsiDatabaseBuilder } from './codecs/msi-database-builder.js';
 export { DsStoreBuilder } from './codecs/ds-store-builder.js';
+export { DmgSplashGenerator } from './codecs/dmg-splash-generator.js';
 export { HfsPlusVolumeBuilder } from './codecs/hfs-plus-volume-builder.js';
 export { UdifDmgWriter } from './codecs/udif-dmg-writer.js';
 export { GVariantCodec } from './codecs/gvariant-codec.js';
