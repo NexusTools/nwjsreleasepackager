@@ -33,6 +33,32 @@ export type PackageFormat =
   | 'linux-zip';
 
 /**
+ * Specification for an additional or platform-specific file to inject into the packaged application.
+ * Supports copying a physical file (`source`) or generating file contents (`content`) per target
+ * platform and architecture, with template variable expansion:
+ * - `{platform}`: 'win' | 'osx' | 'linux'
+ * - `{nodePlatform}`: 'win32' | 'darwin' | 'linux'
+ * - `{arch}`: 'x64' | 'ia32' | 'arm64'
+ * - `{ext}`: '.exe' on win, '' on osx/linux
+ */
+export interface ExtraFileSpec {
+  /** Source file path on disk (relative to projectDir or absolute). Supports `{platform}`, `{nodePlatform}`, `{arch}`, `{ext}`. */
+  source?: string;
+  /** Inline string content to write directly to `destination` (e.g., generated config like `ffmpegconfig.js`). Supports placeholders. */
+  content?: string;
+  /** Destination path relative to the packaged application root (e.g., `bin/ffmpeg{ext}` or `src/ffmpegconfig.js`). Supports placeholders. */
+  destination: string;
+  /** Optional filter: only include this file when building for these target platforms. */
+  platforms?: TargetPlatform[];
+  /** Optional filter: only include this file when building for these target architectures. */
+  arch?: TargetArch[];
+  /** Whether the file should be marked executable (`0o100755`) in the package. */
+  executable?: boolean;
+  /** If true, missing `source` file records a warning instead of throwing an error. */
+  optional?: boolean;
+}
+
+/**
  * Windows-specific configuration options.
  */
 export interface WindowsTargetConfig {
@@ -52,6 +78,8 @@ export interface WindowsTargetConfig {
   createStartMenuShortcut?: boolean;
   /** Legal copyright string embedded in PE resource and MSI */
   copyright?: string;
+  /** Additional or generated files specific to Windows builds */
+  extraFiles?: ExtraFileSpec[];
 }
 
 /**
@@ -72,6 +100,8 @@ export interface MacTargetConfig {
   volumeName?: string;
   /** Copyright string for Info.plist NSHumanReadableCopyright */
   copyright?: string;
+  /** Additional or generated files specific to macOS builds */
+  extraFiles?: ExtraFileSpec[];
 }
 
 /**
@@ -105,6 +135,8 @@ export interface LinuxTargetConfig {
     devices?: string[];
     filesystems?: string[];
   };
+  /** Additional or generated files specific to Linux builds */
+  extraFiles?: ExtraFileSpec[];
 }
 
 /**
@@ -147,6 +179,8 @@ export interface PackagerConfig {
   bundlingMode?: BundlingMode;
   /** Glob/prefix patterns of project files to exclude from packaging */
   excludePatterns?: string[];
+  /** Additional or generated files to inject into packaged releases across platforms/architectures */
+  extraFiles?: ExtraFileSpec[];
   /** Default icon path (.png or .ico) used if platform-specific icon is not set */
   icon?: string;
   /** Target platforms to build (default: ['win', 'osx', 'linux']) */
@@ -183,6 +217,7 @@ export interface ResolvedPackagerConfig {
   nwDownloadUrl: string;
   bundlingMode: BundlingMode;
   excludePatterns: string[];
+  extraFiles: ExtraFileSpec[];
   icon?: string;
   platforms: TargetPlatform[];
   win: Required<Omit<WindowsTargetConfig, 'icon'>> & { icon?: string };

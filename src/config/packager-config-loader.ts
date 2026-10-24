@@ -121,6 +121,7 @@ export class PackagerConfigLoader {
       '.nwjs-cache',
       'release',
       'node_modules/.cache',
+      'node_modules/@nexustools/nwjsreleasepackager',
       '*.log',
       'nwjsreleasepackager.json',
       '.nwjspackagerrc.json'
@@ -137,6 +138,12 @@ export class PackagerConfigLoader {
 
     const upgradeCode =
       merged.win?.upgradeCode ?? PackagerConfigLoader.deterministicGuid(`msi-upgrade:${appId}`);
+
+    const extraFiles = [
+      ...(pkgEmbeddedConfig.extraFiles ?? []),
+      ...(fileConfig.extraFiles ?? []),
+      ...(overrides.extraFiles ?? [])
+    ];
 
     return {
       projectDir,
@@ -157,6 +164,7 @@ export class PackagerConfigLoader {
       nwDownloadUrl: (merged.nwDownloadUrl ?? 'https://dl.nwjs.io').replace(/\/+$/, ''),
       bundlingMode: merged.bundlingMode ?? 'plain',
       excludePatterns,
+      extraFiles,
       icon: merged.icon ? path.resolve(projectDir, merged.icon) : undefined,
       platforms,
       win: {
@@ -171,7 +179,12 @@ export class PackagerConfigLoader {
         upgradeCode,
         createDesktopShortcut: merged.win?.createDesktopShortcut ?? true,
         createStartMenuShortcut: merged.win?.createStartMenuShortcut ?? true,
-        copyright
+        copyright,
+        extraFiles: [
+          ...(pkgEmbeddedConfig.win?.extraFiles ?? []),
+          ...(fileConfig.win?.extraFiles ?? []),
+          ...(overrides.win?.extraFiles ?? [])
+        ]
       },
       mac: {
         arch: merged.mac?.arch ?? ['x64'],
@@ -184,7 +197,12 @@ export class PackagerConfigLoader {
         bundleId: merged.mac?.bundleId ?? appId,
         category: merged.mac?.category ?? 'public.app-category.utilities',
         volumeName: merged.mac?.volumeName ?? `${productName} ${version}`,
-        copyright
+        copyright,
+        extraFiles: [
+          ...(pkgEmbeddedConfig.mac?.extraFiles ?? []),
+          ...(fileConfig.mac?.extraFiles ?? []),
+          ...(overrides.mac?.extraFiles ?? [])
+        ]
       },
       linux: {
         arch: merged.linux?.arch ?? ['x64'],
@@ -215,7 +233,12 @@ export class PackagerConfigLoader {
           sockets: merged.linux?.flatpakPermissions?.sockets ?? ['x11', 'wayland', 'pulseaudio'],
           devices: merged.linux?.flatpakPermissions?.devices ?? ['dri'],
           filesystems: merged.linux?.flatpakPermissions?.filesystems ?? ['host']
-        }
+        },
+        extraFiles: [
+          ...(pkgEmbeddedConfig.linux?.extraFiles ?? []),
+          ...(fileConfig.linux?.extraFiles ?? []),
+          ...(overrides.linux?.extraFiles ?? [])
+        ]
       },
       onProgress: merged.onProgress
     };

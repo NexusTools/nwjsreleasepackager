@@ -62,7 +62,8 @@ export class NwjsReleasePackager {
           arch,
           nwRuntimeDir: runtimeDir,
           appFiles,
-          config: this.config
+          config: this.config,
+          warnings
         });
 
         if (this.config.win.formats.includes('win-zip')) {
@@ -98,7 +99,8 @@ export class NwjsReleasePackager {
           arch,
           nwRuntimeDir: runtimeDir,
           appFiles,
-          config: this.config
+          config: this.config,
+          warnings
         });
 
         if (this.config.mac.formats.includes('mac-dmg')) {
@@ -129,7 +131,8 @@ export class NwjsReleasePackager {
           arch,
           nwRuntimeDir: runtimeDir,
           appFiles,
-          config: this.config
+          config: this.config,
+          warnings
         });
 
         if (this.config.linux.formats.includes('linux-deb')) {

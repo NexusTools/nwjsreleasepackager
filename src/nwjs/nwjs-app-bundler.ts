@@ -107,6 +107,111 @@ export class NwjsAppBundler {
   }
 
   /**
+   * Resolves the application files for a specific target `(platform, arch)` by applying any matching
+   * `extraFiles` specifications (copying platform-specific binaries such as `ffmpeg` or generating/overriding
+   * platform configuration files such as `ffmpegconfig.js`).
+   */
+  public static resolvePlatformAppFiles(
+    baseAppFiles: VirtualFileEntry[],
+    platform: TargetPlatform,
+    arch: TargetArch,
+    config: ResolvedPackagerConfig,
+    warnings?: string[]
+  ): VirtualFileEntry[] {
+    const platformExtras =
+      platform === 'win'
+        ? config.win.extraFiles
+        : platform === 'osx'
+          ? config.mac.extraFiles
+          : config.linux.extraFiles;
+
+    const allSpecs = [...(config.extraFiles ?? []), ...(platformExtras ?? [])];
+    if (allSpecs.length === 0) {
+      return baseAppFiles;
+    }
+
+    const nodePlatform = platform === 'win' ? 'win32' : platform === 'osx' ? 'darwin' : 'linux';
+    const ext = platform === 'win' ? '.exe' : '';
+
+    const expandVars = (template: string): string =>
+      template
+        .replace(/\{platform\}/g, platform)
+        .replace(/\{nodePlatform\}/g, nodePlatform)
+        .replace(/\{arch\}/g, arch)
+        .replace(/\{ext\}/g, ext);
+
+    const fileMap = new Map<string, VirtualFileEntry>();
+    for (const f of baseAppFiles) {
+      fileMap.set(f.relativePath, f);
+    }
+
+    for (const spec of allSpecs) {
+      if (spec.platforms && spec.platforms.length > 0 && !spec.platforms.includes(platform)) {
+        continue;
+      }
+      if (spec.arch && spec.arch.length > 0 && !spec.arch.includes(arch)) {
+        continue;
+      }
+
+      const destRel = expandVars(spec.destination)
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '');
+      if (!destRel) {
+        continue;
+      }
+
+      let data: Buffer;
+      let mtime = new Date();
+      let sourceMode = 0o100644;
+
+      if (typeof spec.content === 'string') {
+        const expandedContent = expandVars(spec.content);
+        data = Buffer.from(expandedContent, 'utf8');
+      } else if (spec.source) {
+        const expandedSource = expandVars(spec.source);
+        const fullSourcePath = path.resolve(config.projectDir, expandedSource);
+        if (!fs.existsSync(fullSourcePath)) {
+          if (spec.optional) {
+            warnings?.push(
+              `Optional extraFile source not found for ${platform}-${arch}: ${fullSourcePath}`
+            );
+            continue;
+          }
+          throw new Error(
+            `Required extraFile source not found for ${platform}-${arch}: ${fullSourcePath}`
+          );
+        }
+        const stat = fs.statSync(fullSourcePath);
+        data = fs.readFileSync(fullSourcePath);
+        mtime = stat.mtime;
+        sourceMode = (stat.mode & 0o111) !== 0 ? 0o100755 : 0o100644;
+      } else {
+        continue;
+      }
+
+      const isExecutable =
+        spec.executable === true ||
+        (spec.executable !== false &&
+          (sourceMode === 0o100755 ||
+            destRel.endsWith('.exe') ||
+            destRel.endsWith('.sh') ||
+            destRel.startsWith('bin/') ||
+            destRel.includes('/bin/')));
+
+      fileMap.set(destRel, {
+        relativePath: destRel,
+        data,
+        isDirectory: false,
+        isSymlink: false,
+        mode: isExecutable ? 0o100755 : 0o100644,
+        mtime
+      });
+    }
+
+    return Array.from(fileMap.values());
+  }
+
+  /**
    * Builds a zipped `package.nw` / `app.nw` Buffer from the collected application files.
    */
   public static buildNwZipBuffer(appFiles: VirtualFileEntry[]): Buffer {
@@ -127,7 +232,15 @@ export class NwjsAppBundler {
     nwRuntimeDir: string;
     appFiles: VirtualFileEntry[];
     config: ResolvedPackagerConfig;
+    warnings?: string[];
   }): VirtualFileEntry[] {
+    const resolvedAppFiles = NwjsAppBundler.resolvePlatformAppFiles(
+      options.appFiles,
+      options.platform,
+      options.arch,
+      options.config,
+      options.warnings
+    );
     const runtimeEntries = NwjsAppBundler.readPhysicalDirectory(options.nwRuntimeDir);
     const outEntries: VirtualFileEntry[] = [];
 
@@ -139,7 +252,7 @@ export class NwjsAppBundler {
 
     const nwZipBuf =
       options.config.bundlingMode === 'zip' || options.config.bundlingMode === 'fused'
-        ? NwjsAppBundler.buildNwZipBuffer(options.appFiles)
+        ? NwjsAppBundler.buildNwZipBuffer(resolvedAppFiles)
         : null;
 
     let customIconBuffer: Buffer | undefined;
@@ -185,7 +298,7 @@ export class NwjsAppBundler {
 
     if (options.config.bundlingMode === 'plain') {
       // Place application files directly alongside nw.exe / nw per NW.js Option 1 recommendation
-      for (const appFile of options.appFiles) {
+      for (const appFile of resolvedAppFiles) {
         outEntries.push(appFile);
       }
     } else if (options.config.bundlingMode === 'zip' && nwZipBuf) {
@@ -213,7 +326,15 @@ export class NwjsAppBundler {
     nwRuntimeDir: string;
     appFiles: VirtualFileEntry[];
     config: ResolvedPackagerConfig;
+    warnings?: string[];
   }): { appBundleName: string; entries: VirtualFileEntry[] } {
+    const resolvedAppFiles = NwjsAppBundler.resolvePlatformAppFiles(
+      options.appFiles,
+      'osx',
+      options.arch,
+      options.config,
+      options.warnings
+    );
     const appBundleName = `${options.config.productName}.app`;
     const runtimeEntries = NwjsAppBundler.readPhysicalDirectory(options.nwRuntimeDir);
     const outEntries: VirtualFileEntry[] = [];
@@ -298,7 +419,7 @@ export class NwjsAppBundler {
 
     // Place application files inside Contents/Resources/app.nw
     if (options.config.bundlingMode === 'zip' || options.config.bundlingMode === 'fused') {
-      const nwZip = NwjsAppBundler.buildNwZipBuffer(options.appFiles);
+      const nwZip = NwjsAppBundler.buildNwZipBuffer(resolvedAppFiles);
       outEntries.push({
         relativePath: `${appBundleName}/Contents/Resources/app.nw`,
         data: nwZip,
@@ -308,7 +429,7 @@ export class NwjsAppBundler {
         mtime: new Date()
       });
     } else {
-      for (const appFile of options.appFiles) {
+      for (const appFile of resolvedAppFiles) {
         outEntries.push({
           ...appFile,
           relativePath: `${appBundleName}/Contents/Resources/app.nw/${appFile.relativePath}`
