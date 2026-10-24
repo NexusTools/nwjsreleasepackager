@@ -159,7 +159,7 @@ export class PackagerConfigLoader {
       homepage,
       license,
       executableName,
-      nwVersion: (merged.nwVersion ?? '0.93.0').replace(/^v/, ''),
+      nwVersion: (merged.nwVersion ?? '0.115.0').replace(/^v/, ''),
       nwFlavor: merged.nwFlavor ?? 'normal',
       nwDownloadUrl: (merged.nwDownloadUrl ?? 'https://dl.nwjs.io').replace(/\/+$/, ''),
       bundlingMode: merged.bundlingMode ?? 'plain',

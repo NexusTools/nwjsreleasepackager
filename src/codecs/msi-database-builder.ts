@@ -8,6 +8,7 @@ interface MsiColumnDef {
   /** 's' = string, 'i2' = 16-bit int, 'i4' = 32-bit int, 'v' = binary stream */
   kind: 's' | 'i2' | 'i4' | 'v';
   typeCode: number;
+  isPrimaryKey?: boolean;
 }
 
 interface MsiTableDef {
@@ -104,18 +105,29 @@ export class MsiDatabaseBuilder {
 
     const mainExeEntry = msiFiles.find((f) => f.isMainExecutable) ?? msiFiles[0];
 
-    // Build relational tables
+    // Build relational tables using exact Windows Installer _Columns typeCode flags:
+    // - 0x2000 = Primary Key
+    // - 0x1000 = Nullable
+    // - 0x0800 = String / Object
+    // - 0x0400 = Short (2-byte integer) or Fixed-length string
+    // - 0x0200 = Localizable string
+    // - 0x0100 = Persistent table column
     const tables: MsiTableDef[] = [];
 
     // 1. Property table
     tables.push({
       name: 'Property',
       columns: [
-        { name: 'Property', kind: 's', typeCode: 0x0d48 },
+        { name: 'Property', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Value', kind: 's', typeCode: 0x0f00 }
       ],
       rows: [
-        ['ALLUSERS', '1'],
+        ['ALLUSERS', '2'],
+        ['MSIINSTALLPERUSER', '1'],
+        ['MSIFASTINSTALL', '7'],
+        ['DefaultUIFont', 'DlgFont8'],
+        ['ErrorDialog', 'ErrorDlg'],
+        ['_BrowseProperty', 'INSTALLDIR'],
         ['ARPHELPLINK', 'https://nwjs.io'],
         ['ARPPRODUCTICON', 'AppIcon.ico'],
         ['Manufacturer', options.manufacturer],
@@ -149,7 +161,7 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'Directory',
       columns: [
-        { name: 'Directory', kind: 's', typeCode: 0x0d48 },
+        { name: 'Directory', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Directory_Parent', kind: 's', typeCode: 0x1d48 },
         { name: 'DefaultDir', kind: 's', typeCode: 0x0fff }
       ],
@@ -169,10 +181,10 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'Component',
       columns: [
-        { name: 'Component', kind: 's', typeCode: 0x0d48 },
+        { name: 'Component', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'ComponentId', kind: 's', typeCode: 0x1d26 },
         { name: 'Directory_', kind: 's', typeCode: 0x0d48 },
-        { name: 'Attributes', kind: 'i2', typeCode: 0x0102 },
+        { name: 'Attributes', kind: 'i2', typeCode: 0x0502 },
         { name: 'Condition', kind: 's', typeCode: 0x1dff },
         { name: 'KeyPath', kind: 's', typeCode: 0x1d48 }
       ],
@@ -193,14 +205,14 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'File',
       columns: [
-        { name: 'File', kind: 's', typeCode: 0x0d48 },
+        { name: 'File', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Component_', kind: 's', typeCode: 0x0d48 },
         { name: 'FileName', kind: 's', typeCode: 0x0fff },
         { name: 'FileSize', kind: 'i4', typeCode: 0x0104 },
         { name: 'Version', kind: 's', typeCode: 0x1d48 },
         { name: 'Language', kind: 's', typeCode: 0x1d14 },
-        { name: 'Attributes', kind: 'i2', typeCode: 0x1102 },
-        { name: 'Sequence', kind: 'i2', typeCode: 0x0102 }
+        { name: 'Attributes', kind: 'i2', typeCode: 0x1502 },
+        { name: 'Sequence', kind: 'i2', typeCode: 0x0502 }
       ],
       rows: fileRows
     });
@@ -209,14 +221,14 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'Feature',
       columns: [
-        { name: 'Feature', kind: 's', typeCode: 0x0d26 },
+        { name: 'Feature', kind: 's', typeCode: 0x2d26, isPrimaryKey: true },
         { name: 'Feature_Parent', kind: 's', typeCode: 0x1d26 },
         { name: 'Title', kind: 's', typeCode: 0x1f40 },
         { name: 'Description', kind: 's', typeCode: 0x1fff },
-        { name: 'Display', kind: 'i2', typeCode: 0x1102 },
-        { name: 'Level', kind: 'i2', typeCode: 0x0102 },
+        { name: 'Display', kind: 'i2', typeCode: 0x1502 },
+        { name: 'Level', kind: 'i2', typeCode: 0x0502 },
         { name: 'Directory_', kind: 's', typeCode: 0x1d48 },
-        { name: 'Attributes', kind: 'i2', typeCode: 0x0102 }
+        { name: 'Attributes', kind: 'i2', typeCode: 0x0502 }
       ],
       rows: [
         [
@@ -236,8 +248,8 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'FeatureComponents',
       columns: [
-        { name: 'Feature_', kind: 's', typeCode: 0x0d26 },
-        { name: 'Component_', kind: 's', typeCode: 0x0d48 }
+        { name: 'Feature_', kind: 's', typeCode: 0x2d26, isPrimaryKey: true },
+        { name: 'Component_', kind: 's', typeCode: 0x2d48, isPrimaryKey: true }
       ],
       rows: msiFiles.map((f) => ['MainFeature', f.componentKey])
     });
@@ -246,8 +258,8 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'Media',
       columns: [
-        { name: 'DiskId', kind: 'i2', typeCode: 0x0102 },
-        { name: 'LastSequence', kind: 'i2', typeCode: 0x0102 },
+        { name: 'DiskId', kind: 'i2', typeCode: 0x2502, isPrimaryKey: true },
+        { name: 'LastSequence', kind: 'i2', typeCode: 0x0502 },
         { name: 'DiskPrompt', kind: 's', typeCode: 0x1f40 },
         { name: 'Cabinet', kind: 's', typeCode: 0x1dff },
         { name: 'VolumeLabel', kind: 's', typeCode: 0x1d20 },
@@ -260,10 +272,10 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'Icon',
       columns: [
-        { name: 'Name', kind: 's', typeCode: 0x0d48 },
+        { name: 'Name', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Data', kind: 'v', typeCode: 0x0900 }
       ],
-      rows: [['AppIcon.ico', 'Icon.AppIcon.ico']]
+      rows: [['AppIcon.ico', 1]]
     });
 
     // 9. Shortcut table
@@ -306,17 +318,17 @@ export class MsiDatabaseBuilder {
       tables.push({
         name: 'Shortcut',
         columns: [
-          { name: 'Shortcut', kind: 's', typeCode: 0x0d48 },
+          { name: 'Shortcut', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
           { name: 'Directory_', kind: 's', typeCode: 0x0d48 },
           { name: 'Name', kind: 's', typeCode: 0x0f80 },
           { name: 'Component_', kind: 's', typeCode: 0x0d48 },
           { name: 'Target', kind: 's', typeCode: 0x0d48 },
           { name: 'Arguments', kind: 's', typeCode: 0x1dff },
           { name: 'Description', kind: 's', typeCode: 0x1fff },
-          { name: 'Hotkey', kind: 'i2', typeCode: 0x1102 },
+          { name: 'Hotkey', kind: 'i2', typeCode: 0x1502 },
           { name: 'Icon_', kind: 's', typeCode: 0x1d48 },
-          { name: 'IconIndex', kind: 'i2', typeCode: 0x1102 },
-          { name: 'ShowCmd', kind: 'i2', typeCode: 0x1102 },
+          { name: 'IconIndex', kind: 'i2', typeCode: 0x1502 },
+          { name: 'ShowCmd', kind: 'i2', typeCode: 0x1502 },
           { name: 'WkDir', kind: 's', typeCode: 0x1d48 }
         ],
         rows: shortcutRows
@@ -327,9 +339,9 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'InstallExecuteSequence',
       columns: [
-        { name: 'Action', kind: 's', typeCode: 0x0d48 },
+        { name: 'Action', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Condition', kind: 's', typeCode: 0x1dff },
-        { name: 'Sequence', kind: 'i2', typeCode: 0x1102 }
+        { name: 'Sequence', kind: 'i2', typeCode: 0x1502 }
       ],
       rows: [
         ['LaunchConditions', null, 100],
@@ -356,22 +368,422 @@ export class MsiDatabaseBuilder {
     tables.push({
       name: 'InstallUISequence',
       columns: [
-        { name: 'Action', kind: 's', typeCode: 0x0d48 },
+        { name: 'Action', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
         { name: 'Condition', kind: 's', typeCode: 0x1dff },
-        { name: 'Sequence', kind: 'i2', typeCode: 0x1102 }
+        { name: 'Sequence', kind: 'i2', typeCode: 0x1502 }
       ],
       rows: [
         ['LaunchConditions', null, 100],
         ['CostInitialize', null, 800],
         ['FileCost', null, 900],
         ['CostFinalize', null, 1000],
-        ['ExecuteAction', null, 1300]
+        ['InstallDirDlg', 'NOT Installed', 1250],
+        ['MaintenanceDlg', 'Installed', 1260],
+        ['ProgressDlg', null, 1280],
+        ['ExecuteAction', null, 1300],
+        ['ExitDlg', null, -1],
+        ['UserExit', null, -2],
+        ['FatalError', null, -3]
       ]
     });
 
-    // Build _Tables and _Columns metadata
+    // 12. TextStyle table (fonts for visual MSI dialogs)
+    tables.push({
+      name: 'TextStyle',
+      columns: [
+        { name: 'TextStyle', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'FaceName', kind: 's', typeCode: 0x0d20 },
+        { name: 'Size', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Color', kind: 'i4', typeCode: 0x1104 },
+        { name: 'StyleBits', kind: 'i2', typeCode: 0x1502 }
+      ],
+      rows: [
+        ['DlgFont8', 'Tahoma', 8, null, 0],
+        ['DlgFontBold8', 'Tahoma', 8, null, 1],
+        ['TitleFont', 'Segoe UI', 12, null, 1],
+        ['VerdanaBold13', 'Verdana', 13, null, 1]
+      ]
+    });
+
+    // 13. UIText table (standard UI strings for DirectoryList / BrowseDlg / Costing)
+    tables.push({
+      name: 'UIText',
+      columns: [
+        { name: 'Key', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'Text', kind: 's', typeCode: 0x1fff }
+      ],
+      rows: [
+        ['AbsentPath', null],
+        ['bytes', 'bytes'],
+        ['GB', 'GB'],
+        ['KB', 'KB'],
+        ['MB', 'MB'],
+        ['MenuAbsent', 'Entire feature will be unavailable'],
+        ['MenuAllCD', 'Entire feature will be installed to run from CD'],
+        ['MenuAllLocal', 'Entire feature will be installed on local hard drive'],
+        ['MenuAllNetwork', 'Entire feature will be installed to run from network'],
+        ['MenuCD', 'Will be installed to run from CD'],
+        ['MenuLocal', 'Will be installed on local hard drive'],
+        ['MenuNetwork', 'Will be installed to run from network'],
+        ['NewFolder', 'New Folder'],
+        ['SelAbsentAbsent', 'This feature will remain uninstalled'],
+        ['SelAbsentLocal', 'This feature will be set to be installed on the local hard drive'],
+        ['TimeRemaining', 'Time remaining: {[1] minutes }{[2] seconds}'],
+        ['VolumeCostAvailable', 'Available'],
+        ['VolumeCostDifference', 'Difference'],
+        ['VolumeCostRequired', 'Required'],
+        ['VolumeCostSize', 'Disk Size'],
+        ['VolumeCostVolume', 'Volume']
+      ]
+    });
+
+    // 14. ActionText table (status descriptions shown on ProgressDlg)
+    tables.push({
+      name: 'ActionText',
+      columns: [
+        { name: 'Action', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'Description', kind: 's', typeCode: 0x1f00 },
+        { name: 'Template', kind: 's', typeCode: 0x1f00 }
+      ],
+      rows: [
+        ['CostInitialize', 'Computing space requirements...', null],
+        ['FileCost', 'Computing space requirements...', null],
+        ['CostFinalize', 'Computing space requirements...', null],
+        ['InstallValidate', 'Validating install...', null],
+        ['InstallFiles', 'Copying application files...', 'File: [1], Directory: [9], Size: [6]'],
+        ['CreateShortcuts', 'Creating application shortcuts...', 'Shortcut: [1]'],
+        ['RemoveFiles', 'Removing application files...', 'File: [1], Directory: [9]'],
+        ['RemoveShortcuts', 'Removing application shortcuts...', 'Shortcut: [1]'],
+        ['PublishFeatures', 'Publishing product features...', 'Feature: [1]'],
+        ['PublishProduct', 'Publishing product information...', null],
+        ['RegisterProduct', 'Registering product...', '[1]'],
+        ['RegisterUser', 'Registering user...', '[1]']
+      ]
+    });
+
+    // 15. Dialog table (Visual MSI Wizard with custom Install Path selection & Directory Browser)
+    tables.push({
+      name: 'Dialog',
+      columns: [
+        { name: 'Dialog', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'HCentering', kind: 'i2', typeCode: 0x0502 },
+        { name: 'VCentering', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Width', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Height', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Attributes', kind: 'i4', typeCode: 0x1104 },
+        { name: 'Title', kind: 's', typeCode: 0x1f80 },
+        { name: 'Control_First', kind: 's', typeCode: 0x0d32 },
+        { name: 'Control_Default', kind: 's', typeCode: 0x1d32 },
+        { name: 'Control_Cancel', kind: 's', typeCode: 0x1d32 }
+      ],
+      rows: [
+        [
+          'InstallDirDlg',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'InstallButton',
+          'InstallButton',
+          'CancelButton'
+        ],
+        [
+          'BrowseDlg',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] - Change Destination Folder',
+          'PathEdit',
+          'OKButton',
+          'CancelButton'
+        ],
+        [
+          'MaintenanceDlg',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'RemoveButton',
+          'RemoveButton',
+          'CancelButton'
+        ],
+        [
+          'ProgressDlg',
+          50,
+          50,
+          370,
+          270,
+          1,
+          '[ProductName] Setup',
+          'CancelButton',
+          'CancelButton',
+          'CancelButton'
+        ],
+        [
+          'CancelDlg',
+          50,
+          50,
+          260,
+          85,
+          3,
+          '[ProductName] Setup',
+          'NoButton',
+          'NoButton',
+          'NoButton'
+        ],
+        [
+          'ExitDlg',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'FinishButton',
+          'FinishButton',
+          'FinishButton'
+        ],
+        [
+          'UserExit',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'FinishButton',
+          'FinishButton',
+          'FinishButton'
+        ],
+        [
+          'FatalError',
+          50,
+          50,
+          370,
+          270,
+          3,
+          '[ProductName] Setup',
+          'FinishButton',
+          'FinishButton',
+          'FinishButton'
+        ],
+        [
+          'ErrorDlg',
+          50,
+          50,
+          270,
+          105,
+          65539,
+          'Installer Information',
+          'ErrorText',
+          null,
+          null
+        ]
+      ]
+    });
+
+    // 16. Control table
+    tables.push({
+      name: 'Control',
+      columns: [
+        { name: 'Dialog_', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'Control', kind: 's', typeCode: 0x2d32, isPrimaryKey: true },
+        { name: 'Type', kind: 's', typeCode: 0x0d14 },
+        { name: 'X', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Y', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Width', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Height', kind: 'i2', typeCode: 0x0502 },
+        { name: 'Attributes', kind: 'i4', typeCode: 0x1104 },
+        { name: 'Property', kind: 's', typeCode: 0x1d32 },
+        { name: 'Text', kind: 's', typeCode: 0x1f00 },
+        { name: 'Control_Next', kind: 's', typeCode: 0x1d32 },
+        { name: 'Help', kind: 's', typeCode: 0x1f32 }
+      ],
+      rows: [
+        // --- InstallDirDlg Controls ---
+        ['InstallDirDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Welcome to the [ProductName] Setup Wizard', null, null],
+        ['InstallDirDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Select the installation folder for [ProductName] [ProductVersion].', null, null],
+        ['InstallDirDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+        ['InstallDirDlg', 'DescriptionText', 'Text', 20, 62, 330, 36, 3, null, 'The Setup Wizard will install [ProductName] on your computer. You may install to the default folder shown below, edit the path directly, or click Browse to select a different folder.', null, null],
+        ['InstallDirDlg', 'FolderLabel', 'Text', 20, 112, 330, 14, 3, null, '{\\DlgFontBold8}Destination Installation Folder:', null, null],
+        ['InstallDirDlg', 'PathEdit', 'PathEdit', 20, 128, 255, 18, 3, 'INSTALLDIR', null, 'BrowseButton', null],
+        ['InstallDirDlg', 'BrowseButton', 'PushButton', 282, 127, 68, 20, 3, null, '&Browse...', 'CancelButton', null],
+        ['InstallDirDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['InstallDirDlg', 'InstallButton', 'PushButton', 230, 243, 60, 18, 3, null, '&Install', 'PathEdit', null],
+        ['InstallDirDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'InstallButton', null],
+
+        // --- BrowseDlg Controls ---
+        ['BrowseDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Change Destination Folder', null, null],
+        ['BrowseDlg', 'ComboLabel', 'Text', 20, 42, 60, 14, 3, null, '&Look in:', null, null],
+        ['BrowseDlg', 'DirectoryCombo', 'DirectoryCombo', 75, 40, 205, 80, 458763, '_BrowseProperty', null, 'UpButton', null],
+        ['BrowseDlg', 'UpButton', 'PushButton', 286, 39, 32, 18, 3, null, '&Up', 'NewFolderButton', null],
+        ['BrowseDlg', 'NewFolderButton', 'PushButton', 322, 39, 34, 18, 3, null, '&New', 'DirectoryList', null],
+        ['BrowseDlg', 'DirectoryList', 'DirectoryList', 20, 64, 336, 122, 11, '_BrowseProperty', null, 'PathEdit', null],
+        ['BrowseDlg', 'PathLabel', 'Text', 20, 196, 85, 14, 3, null, '&Folder path:', null, null],
+        ['BrowseDlg', 'PathEdit', 'PathEdit', 95, 194, 261, 18, 11, '_BrowseProperty', null, 'OKButton', null],
+        ['BrowseDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['BrowseDlg', 'OKButton', 'PushButton', 236, 243, 56, 18, 3, null, 'OK', 'CancelButton', null],
+        ['BrowseDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'DirectoryCombo', null],
+
+        // --- MaintenanceDlg Controls ---
+        ['MaintenanceDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}[ProductName] Maintenance', null, null],
+        ['MaintenanceDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Modify, repair, or remove [ProductName].', null, null],
+        ['MaintenanceDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+        ['MaintenanceDlg', 'DescriptionText', 'Text', 20, 70, 330, 45, 3, null, '[ProductName] is currently installed. Click Remove to uninstall [ProductName] from your computer, or click Cancel to exit the wizard.', null, null],
+        ['MaintenanceDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['MaintenanceDlg', 'RemoveButton', 'PushButton', 226, 243, 64, 18, 3, null, '&Remove', 'CancelButton', null],
+        ['MaintenanceDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'RemoveButton', null],
+
+        // --- ProgressDlg Controls ---
+        ['ProgressDlg', 'TitleText', 'Text', 15, 10, 340, 20, 196611, null, '{\\TitleFont}Installing [ProductName]', null, null],
+        ['ProgressDlg', 'SubtitleText', 'Text', 15, 30, 340, 15, 196611, null, 'Please wait while the Setup Wizard installs [ProductName].', null, null],
+        ['ProgressDlg', 'HeaderLine', 'Line', 0, 48, 370, 0, 1, null, null, null, null],
+        ['ProgressDlg', 'StatusLabel', 'Text', 20, 75, 55, 14, 3, null, 'Status:', null, null],
+        ['ProgressDlg', 'ActionText', 'Text', 75, 75, 275, 14, 3, null, 'Preparing installation...', null, null],
+        ['ProgressDlg', 'ProgressBar', 'ProgressBar', 20, 100, 330, 16, 65537, null, null, null, null],
+        ['ProgressDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['ProgressDlg', 'CancelButton', 'PushButton', 298, 243, 56, 18, 3, null, 'Cancel', 'CancelButton', null],
+
+        // --- CancelDlg Controls ---
+        ['CancelDlg', 'MessageText', 'Text', 20, 18, 220, 30, 3, null, 'Are you sure you want to cancel [ProductName] installation?', null, null],
+        ['CancelDlg', 'YesButton', 'PushButton', 72, 55, 56, 18, 3, null, '&Yes', 'NoButton', null],
+        ['CancelDlg', 'NoButton', 'PushButton', 136, 55, 56, 18, 3, null, '&No', 'YesButton', null],
+
+        // --- ExitDlg Controls ---
+        ['ExitDlg', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}Completed the [ProductName] Setup Wizard', null, null],
+        ['ExitDlg', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] has been successfully installed on your computer. Click Finish to exit the Setup Wizard.', null, null],
+        ['ExitDlg', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['ExitDlg', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+        // --- UserExit Controls ---
+        ['UserExit', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Was Interrupted', null, null],
+        ['UserExit', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup was cancelled before installation completed. Your system has not been modified.', null, null],
+        ['UserExit', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['UserExit', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+        // --- FatalError Controls ---
+        ['FatalError', 'TitleText', 'Text', 20, 25, 330, 24, 196611, null, '{\\VerdanaBold13}[ProductName] Setup Wizard Ended Prematurely', null, null],
+        ['FatalError', 'DescriptionText', 'Text', 20, 65, 330, 50, 3, null, '[ProductName] setup ended prematurely because of an error. Your system has not been modified.', null, null],
+        ['FatalError', 'BottomLine', 'Line', 0, 234, 370, 0, 1, null, null, null, null],
+        ['FatalError', 'FinishButton', 'PushButton', 298, 243, 56, 18, 3, null, '&Finish', 'FinishButton', null],
+
+        // --- ErrorDlg Controls ---
+        ['ErrorDlg', 'ErrorText', 'Text', 20, 15, 230, 50, 3, null, 'Information text', null, null],
+        ['ErrorDlg', 'O', 'PushButton', 100, 75, 56, 18, 3, null, 'OK', null, null],
+        ['ErrorDlg', 'C', 'PushButton', 100, 75, 56, 18, 3, null, 'Cancel', null, null],
+        ['ErrorDlg', 'A', 'PushButton', 100, 75, 56, 18, 3, null, 'Abort', null, null],
+        ['ErrorDlg', 'R', 'PushButton', 100, 75, 56, 18, 3, null, 'Retry', null, null],
+        ['ErrorDlg', 'I', 'PushButton', 100, 75, 56, 18, 3, null, 'Ignore', null, null],
+        ['ErrorDlg', 'Y', 'PushButton', 100, 75, 56, 18, 3, null, 'Yes', null, null],
+        ['ErrorDlg', 'N', 'PushButton', 100, 75, 56, 18, 3, null, 'No', null, null]
+      ]
+    });
+
+    // 17. ControlEvent table
+    tables.push({
+      name: 'ControlEvent',
+      columns: [
+        { name: 'Dialog_', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'Control_', kind: 's', typeCode: 0x2d32, isPrimaryKey: true },
+        { name: 'Event', kind: 's', typeCode: 0x2d32, isPrimaryKey: true },
+        { name: 'Argument', kind: 's', typeCode: 0x2dff, isPrimaryKey: true },
+        { name: 'Condition', kind: 's', typeCode: 0x3dff, isPrimaryKey: true },
+        { name: 'Ordering', kind: 'i2', typeCode: 0x1502 }
+      ],
+      rows: [
+        // InstallDirDlg events
+        ['InstallDirDlg', 'InstallButton', 'SetTargetPath', 'INSTALLDIR', '1', 1],
+        ['InstallDirDlg', 'InstallButton', 'EndDialog', 'Return', '1', 2],
+        ['InstallDirDlg', 'BrowseButton', '[_BrowseProperty]', 'INSTALLDIR', '1', 1],
+        ['InstallDirDlg', 'BrowseButton', 'SpawnDialog', 'BrowseDlg', '1', 2],
+        ['InstallDirDlg', 'CancelButton', 'SpawnDialog', 'CancelDlg', '1', 1],
+
+        // BrowseDlg events
+        ['BrowseDlg', 'OKButton', 'SetTargetPath', '[_BrowseProperty]', '1', 1],
+        ['BrowseDlg', 'OKButton', 'EndDialog', 'Return', '1', 2],
+        ['BrowseDlg', 'CancelButton', 'Reset', '0', '1', 1],
+        ['BrowseDlg', 'CancelButton', 'EndDialog', 'Return', '1', 2],
+        ['BrowseDlg', 'UpButton', 'DirectoryListUp', '0', '1', 1],
+        ['BrowseDlg', 'NewFolderButton', 'DirectoryListNew', '0', '1', 1],
+
+        // MaintenanceDlg events
+        ['MaintenanceDlg', 'RemoveButton', 'Remove', 'ALL', '1', 1],
+        ['MaintenanceDlg', 'RemoveButton', 'EndDialog', 'Return', '1', 2],
+        ['MaintenanceDlg', 'CancelButton', 'SpawnDialog', 'CancelDlg', '1', 1],
+
+        // ProgressDlg events
+        ['ProgressDlg', 'CancelButton', 'SpawnDialog', 'CancelDlg', '1', 1],
+
+        // CancelDlg events
+        ['CancelDlg', 'NoButton', 'EndDialog', 'Return', '1', 1],
+        ['CancelDlg', 'YesButton', 'EndDialog', 'Exit', '1', 1],
+
+        // Completion / Exit Dialogs
+        ['ExitDlg', 'FinishButton', 'EndDialog', 'Return', '1', 1],
+        ['UserExit', 'FinishButton', 'EndDialog', 'Return', '1', 1],
+        ['FatalError', 'FinishButton', 'EndDialog', 'Return', '1', 1],
+
+        // ErrorDlg events
+        ['ErrorDlg', 'O', 'EndDialog', 'ErrorOk', '1', 1],
+        ['ErrorDlg', 'C', 'EndDialog', 'ErrorCancel', '1', 1],
+        ['ErrorDlg', 'A', 'EndDialog', 'ErrorAbort', '1', 1],
+        ['ErrorDlg', 'R', 'EndDialog', 'ErrorRetry', '1', 1],
+        ['ErrorDlg', 'I', 'EndDialog', 'ErrorIgnore', '1', 1],
+        ['ErrorDlg', 'Y', 'EndDialog', 'ErrorYes', '1', 1],
+        ['ErrorDlg', 'N', 'EndDialog', 'ErrorNo', '1', 1]
+      ]
+    });
+
+    // 18. EventMapping table (subscribes ProgressDlg controls to installer progress events)
+    tables.push({
+      name: 'EventMapping',
+      columns: [
+        { name: 'Dialog_', kind: 's', typeCode: 0x2d48, isPrimaryKey: true },
+        { name: 'Control_', kind: 's', typeCode: 0x2d32, isPrimaryKey: true },
+        { name: 'Event', kind: 's', typeCode: 0x2d32, isPrimaryKey: true },
+        { name: 'Attribute', kind: 's', typeCode: 0x0d32 }
+      ],
+      rows: [
+        ['ProgressDlg', 'ProgressBar', 'SetProgress', 'Progress'],
+        ['ProgressDlg', 'ActionText', 'ActionText', 'Text']
+      ]
+    });
+
+    // Pre-collect all unique strings and assign string pool IDs in lexicographical order
+    // so sorting rows by string value is identical to sorting by string pool ID.
+    const uniqueStrings = new Set<string>();
+    for (const t of tables) {
+      uniqueStrings.add(t.name);
+      for (const col of t.columns) {
+        uniqueStrings.add(col.name);
+      }
+      for (const row of t.rows) {
+        for (let c = 0; c < t.columns.length; c++) {
+          if (t.columns[c].kind === 's') {
+            const val = row[c];
+            if (val !== null && val !== undefined && String(val) !== '') {
+              uniqueStrings.add(String(val));
+            }
+          }
+        }
+      }
+    }
+
+    const sortedUniqueStrings = Array.from(uniqueStrings).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const stringPool = new Map<string, { id: number; refCount: number }>();
     const stringList: string[] = [];
+
+    for (const str of sortedUniqueStrings) {
+      const id = stringList.length + 1;
+      stringList.push(str);
+      stringPool.set(str, { id, refCount: 0 });
+    }
 
     const internString = (str: string | null): number => {
       if (str === null || str === '') {
@@ -390,8 +802,10 @@ export class MsiDatabaseBuilder {
 
     const cfb = new CfbWriter();
 
-    // _Tables stream (1 column of string pool IDs)
-    const sortedTables = [...tables].sort((a, b) => a.name.localeCompare(b.name));
+    // _Tables stream (1 column of string pool IDs sorted by string pool ID)
+    const sortedTables = [...tables].sort(
+      (a, b) => (stringPool.get(a.name)?.id ?? 0) - (stringPool.get(b.name)?.id ?? 0)
+    );
     const tablesStreamBuf = Buffer.alloc(sortedTables.length * 2);
     for (let i = 0; i < sortedTables.length; i++) {
       const strId = internString(sortedTables[i].name);
@@ -399,7 +813,7 @@ export class MsiDatabaseBuilder {
     }
     cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('_Tables', true), tablesStreamBuf);
 
-    // _Columns stream
+    // _Columns stream (sorted by Table string ID, then Column Number)
     const allColumns: { table: string; number: number; name: string; typeCode: number }[] = [];
     for (const t of sortedTables) {
       for (let c = 0; c < t.columns.length; c++) {
@@ -416,15 +830,41 @@ export class MsiDatabaseBuilder {
     for (let i = 0; i < numCols; i++) {
       const col = allColumns[i];
       colsStreamBuf.writeUInt16LE(internString(col.table), i * 2);
-      colsStreamBuf.writeUInt16LE((col.number | 0x8000) >>> 0, numCols * 2 + i * 2);
+      colsStreamBuf.writeUInt16LE((col.number + 0x8000) & 0xffff, numCols * 2 + i * 2);
       colsStreamBuf.writeUInt16LE(internString(col.name), numCols * 4 + i * 2);
-      colsStreamBuf.writeUInt16LE((col.typeCode | 0x8000) >>> 0, numCols * 6 + i * 2);
+      colsStreamBuf.writeUInt16LE((col.typeCode + 0x8000) & 0xffff, numCols * 6 + i * 2);
     }
     cfb.addStream(MsiDatabaseBuilder.encodeMsiStreamName('_Columns', true), colsStreamBuf);
 
-    // Serialize each table stream in column-major order
+    // Serialize each table stream in column-major order with rows sorted by Primary Key(s)
     for (const t of sortedTables) {
-      const numRows = t.rows.length;
+      const pkIndices: number[] = [];
+      for (let c = 0; c < t.columns.length; c++) {
+        if (t.columns[c].isPrimaryKey) {
+          pkIndices.push(c);
+        }
+      }
+      if (pkIndices.length === 0) {
+        pkIndices.push(0);
+      }
+
+      const sortedRows = [...t.rows].sort((rowA, rowB) => {
+        for (const pkIdx of pkIndices) {
+          const colDef = t.columns[pkIdx];
+          if (colDef.kind === 's') {
+            const idA = rowA[pkIdx] ? (stringPool.get(String(rowA[pkIdx]))?.id ?? 0) : 0;
+            const idB = rowB[pkIdx] ? (stringPool.get(String(rowB[pkIdx]))?.id ?? 0) : 0;
+            if (idA !== idB) return idA - idB;
+          } else {
+            const numA = Number(rowA[pkIdx] ?? 0);
+            const numB = Number(rowB[pkIdx] ?? 0);
+            if (numA !== numB) return numA - numB;
+          }
+        }
+        return 0;
+      });
+
+      const numRows = sortedRows.length;
       const colBuffers: Buffer[] = [];
 
       for (let c = 0; c < t.columns.length; c++) {
@@ -432,7 +872,7 @@ export class MsiDatabaseBuilder {
         if (colDef.kind === 'i4') {
           const b = Buffer.alloc(numRows * 4);
           for (let r = 0; r < numRows; r++) {
-            const val = t.rows[r][c];
+            const val = sortedRows[r][c];
             const encoded =
               val === null || val === undefined ? 0 : ((Number(val) + 0x80000000) >>> 0);
             b.writeUInt32LE(encoded, r * 4);
@@ -441,16 +881,24 @@ export class MsiDatabaseBuilder {
         } else if (colDef.kind === 'i2') {
           const b = Buffer.alloc(numRows * 2);
           for (let r = 0; r < numRows; r++) {
-            const val = t.rows[r][c];
+            const val = sortedRows[r][c];
             const encoded =
               val === null || val === undefined ? 0 : ((Number(val) + 0x8000) & 0xffff);
             b.writeUInt16LE(encoded, r * 2);
           }
           colBuffers.push(b);
+        } else if (colDef.kind === 'v') {
+          // OBJECT binary stream column stores 0x0001 when stream is present, 0x0000 when null
+          const b = Buffer.alloc(numRows * 2);
+          for (let r = 0; r < numRows; r++) {
+            const val = sortedRows[r][c];
+            b.writeUInt16LE(val === null || val === undefined ? 0 : 1, r * 2);
+          }
+          colBuffers.push(b);
         } else {
           const b = Buffer.alloc(numRows * 2);
           for (let r = 0; r < numRows; r++) {
-            const val = t.rows[r][c];
+            const val = sortedRows[r][c];
             const strId = internString(val === null || val === undefined ? null : String(val));
             b.writeUInt16LE(strId & 0xffff, r * 2);
           }
@@ -467,8 +915,8 @@ export class MsiDatabaseBuilder {
     // Build _StringPool and _StringData streams
     const stringDataChunks: Buffer[] = [];
     const stringPoolBuf = Buffer.alloc((stringList.length + 1) * 4, 0);
-    // Entry 0 in _StringPool is the codepage header (65001 UTF-8 / 1252)
-    stringPoolBuf.writeUInt16LE(65001, 0);
+    // Entry 0 in _StringPool is the codepage header (0 = neutral/default)
+    stringPoolBuf.writeUInt16LE(0, 0);
     stringPoolBuf.writeUInt16LE(0, 2);
 
     for (let i = 0; i < stringList.length; i++) {
